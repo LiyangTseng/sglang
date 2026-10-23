@@ -557,6 +557,127 @@ class HiCacheStorageResponse(msgspec.Struct, kw_only=True, frozen=True):
         return encode_HiCacheStorageResponse(self)
 
 
+class PauseGenerationRequest(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.PauseGenerationRequest: JSON object (unknown keys ignored)."""
+
+    mode: str = "abort"
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "PauseGenerationRequest":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_PauseGenerationRequest(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_PauseGenerationRequest(self)
+
+
+class ContinueGenerationRequest(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.ContinueGenerationRequest: JSON object (unknown keys ignored)."""
+
+    torch_empty_cache: bool = True
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "ContinueGenerationRequest":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_ContinueGenerationRequest(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_ContinueGenerationRequest(self)
+
+
+class GenerationControlResponse(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.GenerationControlResponse: JSON object (unknown keys ignored)."""
+
+    message: str = ""
+    status: str = ""
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "GenerationControlResponse":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_GenerationControlResponse(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_GenerationControlResponse(self)
+
+
+class UpdateWeightsFromDiskRequest(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.UpdateWeightsFromDiskRequest: JSON object (unknown keys ignored)."""
+
+    model_path: Optional[str] = None
+    load_format: Optional[str] = None
+    abort_all_requests: bool = False
+    weight_version: Optional[str] = None
+    is_async: bool = False
+    torch_empty_cache: bool = False
+    keep_pause: bool = False
+    recapture_cuda_graph: bool = False
+    token_step: int = 0
+    flush_cache: bool = True
+    manifest: Optional[Any] = None
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "UpdateWeightsFromDiskRequest":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_UpdateWeightsFromDiskRequest(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_UpdateWeightsFromDiskRequest(self)
+
+
+class UpdateWeightsFromDiskResponse(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.UpdateWeightsFromDiskResponse: JSON object (unknown keys ignored)."""
+
+    success: bool = False
+    message: str = ""
+    num_paused_requests: int = 0
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "UpdateWeightsFromDiskResponse":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_UpdateWeightsFromDiskResponse(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_UpdateWeightsFromDiskResponse(self)
+
+
+class UpdateWeightVersionRequest(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.UpdateWeightVersionRequest: JSON object (unknown keys ignored)."""
+
+    new_version: Optional[str] = None
+    abort_all_requests: bool = True
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "UpdateWeightVersionRequest":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_UpdateWeightVersionRequest(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_UpdateWeightVersionRequest(self)
+
+
+class UpdateWeightVersionResponse(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.UpdateWeightVersionResponse: JSON object (unknown keys ignored)."""
+
+    success: bool = False
+    message: str = ""
+    new_version: Optional[str] = None
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "UpdateWeightVersionResponse":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_UpdateWeightVersionResponse(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_UpdateWeightVersionResponse(self)
+
+
 class ListModelsRequest(msgspec.Struct, kw_only=True, frozen=True):
     """sglang.api.v1.ListModelsRequest: JSON object (unknown keys ignored)."""
 
@@ -2135,6 +2256,165 @@ def encode_HiCacheStorageResponse(v: HiCacheStorageResponse) -> Dict[str, Any]:
     d: Dict[str, Any] = {}
     d["success"] = v.success
     d["message"] = v.message
+    return d
+
+
+def decode_PauseGenerationRequest(value: Any) -> PauseGenerationRequest:
+    m = _expect_map(value, expected="struct PauseGenerationRequest")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "mode":
+            kw["mode"] = "abort" if x is None else _expect_str(x, expected="a string")
+    return PauseGenerationRequest(**kw)
+
+
+def encode_PauseGenerationRequest(v: PauseGenerationRequest) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    d["mode"] = v.mode
+    return d
+
+
+def decode_ContinueGenerationRequest(value: Any) -> ContinueGenerationRequest:
+    m = _expect_map(value, expected="struct ContinueGenerationRequest")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "torch_empty_cache":
+            kw["torch_empty_cache"] = True if x is None else _expect_bool(x, expected="a boolean")
+    return ContinueGenerationRequest(**kw)
+
+
+def encode_ContinueGenerationRequest(v: ContinueGenerationRequest) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    d["torch_empty_cache"] = v.torch_empty_cache
+    return d
+
+
+def decode_GenerationControlResponse(value: Any) -> GenerationControlResponse:
+    m = _expect_map(value, expected="struct GenerationControlResponse")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "message":
+            kw["message"] = _expect_str(x, expected="a string")
+        elif key == "status":
+            kw["status"] = _expect_str(x, expected="a string")
+    return GenerationControlResponse(**kw)
+
+
+def encode_GenerationControlResponse(v: GenerationControlResponse) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    d["message"] = v.message
+    d["status"] = v.status
+    return d
+
+
+def decode_UpdateWeightsFromDiskRequest(value: Any) -> UpdateWeightsFromDiskRequest:
+    m = _expect_map(value, expected="struct UpdateWeightsFromDiskRequest")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "model_path":
+            kw["model_path"] = None if x is None else _expect_str(x, expected="a string")
+        elif key == "load_format":
+            kw["load_format"] = None if x is None else _expect_str(x, expected="a string")
+        elif key == "abort_all_requests":
+            kw["abort_all_requests"] = _expect_bool(x, expected="a boolean")
+        elif key == "weight_version":
+            kw["weight_version"] = None if x is None else _expect_str(x, expected="a string")
+        elif key == "is_async":
+            kw["is_async"] = _expect_bool(x, expected="a boolean")
+        elif key == "torch_empty_cache":
+            kw["torch_empty_cache"] = _expect_bool(x, expected="a boolean")
+        elif key == "keep_pause":
+            kw["keep_pause"] = _expect_bool(x, expected="a boolean")
+        elif key == "recapture_cuda_graph":
+            kw["recapture_cuda_graph"] = _expect_bool(x, expected="a boolean")
+        elif key == "token_step":
+            kw["token_step"] = _expect_int(x, expected="i64")
+        elif key == "flush_cache":
+            kw["flush_cache"] = True if x is None else _expect_bool(x, expected="a boolean")
+        elif key == "manifest":
+            kw["manifest"] = x
+    return UpdateWeightsFromDiskRequest(**kw)
+
+
+def encode_UpdateWeightsFromDiskRequest(v: UpdateWeightsFromDiskRequest) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    if v.model_path is not None:
+        d["model_path"] = v.model_path
+    if v.load_format is not None:
+        d["load_format"] = v.load_format
+    d["abort_all_requests"] = v.abort_all_requests
+    if v.weight_version is not None:
+        d["weight_version"] = v.weight_version
+    d["is_async"] = v.is_async
+    d["torch_empty_cache"] = v.torch_empty_cache
+    d["keep_pause"] = v.keep_pause
+    d["recapture_cuda_graph"] = v.recapture_cuda_graph
+    d["token_step"] = v.token_step
+    d["flush_cache"] = v.flush_cache
+    if v.manifest is not None:
+        d["manifest"] = v.manifest
+    return d
+
+
+def decode_UpdateWeightsFromDiskResponse(value: Any) -> UpdateWeightsFromDiskResponse:
+    m = _expect_map(value, expected="struct UpdateWeightsFromDiskResponse")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "success":
+            kw["success"] = _expect_bool(x, expected="a boolean")
+        elif key == "message":
+            kw["message"] = _expect_str(x, expected="a string")
+        elif key == "num_paused_requests":
+            kw["num_paused_requests"] = _expect_int(x, expected="i64")
+    return UpdateWeightsFromDiskResponse(**kw)
+
+
+def encode_UpdateWeightsFromDiskResponse(v: UpdateWeightsFromDiskResponse) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    d["success"] = v.success
+    d["message"] = v.message
+    d["num_paused_requests"] = v.num_paused_requests
+    return d
+
+
+def decode_UpdateWeightVersionRequest(value: Any) -> UpdateWeightVersionRequest:
+    m = _expect_map(value, expected="struct UpdateWeightVersionRequest")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "new_version":
+            kw["new_version"] = None if x is None else _expect_str(x, expected="a string")
+        elif key == "abort_all_requests":
+            kw["abort_all_requests"] = True if x is None else _expect_bool(x, expected="a boolean")
+    return UpdateWeightVersionRequest(**kw)
+
+
+def encode_UpdateWeightVersionRequest(v: UpdateWeightVersionRequest) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    if v.new_version is not None:
+        d["new_version"] = v.new_version
+    d["abort_all_requests"] = v.abort_all_requests
+    return d
+
+
+def decode_UpdateWeightVersionResponse(value: Any) -> UpdateWeightVersionResponse:
+    m = _expect_map(value, expected="struct UpdateWeightVersionResponse")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "success":
+            kw["success"] = _expect_bool(x, expected="a boolean")
+        elif key == "message":
+            kw["message"] = _expect_str(x, expected="a string")
+        elif key == "new_version":
+            kw["new_version"] = None if x is None else _expect_str(x, expected="a string")
+    return UpdateWeightVersionResponse(**kw)
+
+
+def encode_UpdateWeightVersionResponse(v: UpdateWeightVersionResponse) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    d["success"] = v.success
+    d["message"] = v.message
+    if v.new_version is not None:
+        d["new_version"] = v.new_version
     return d
 
 

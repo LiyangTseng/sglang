@@ -1,0 +1,72 @@
+// Weight-update control APIs shared by HTTP JSON and gRPC: pausing and
+// resuming generation, reloading weights from disk, and relabeling the weight
+// version. Field names, defaults and null handling follow the Python request
+// structs in python/sglang/srt/managers/io_struct.py.
+syntax = "proto3";
+
+package sglang.api.v1;
+
+import "sglang/json/v1/options.proto";
+
+message PauseGenerationRequest {
+  // One of "abort", "in_place" or "retract"; handlers reject anything else.
+  string mode = 1 [
+    (sglang.json.v1.field_json).null_policy = NULL_POLICY_RESETS_DEFAULT,
+    (sglang.json.v1.field_json).default_string = "abort"
+  ];
+}
+
+message ContinueGenerationRequest {
+  bool torch_empty_cache = 1 [
+    (sglang.json.v1.field_json).null_policy = NULL_POLICY_RESETS_DEFAULT,
+    (sglang.json.v1.field_json).default_bool = true
+  ];
+}
+
+// Python's fixed acknowledgement for pause and continue: the request is sent
+// to the scheduler without waiting for a reply.
+message GenerationControlResponse {
+  string message = 1;
+  string status = 2;
+}
+
+message UpdateWeightsFromDiskRequest {
+  // Required and non-null in the Python HTTP API; handlers validate presence.
+  optional string model_path = 1;
+  optional string load_format = 2;
+  bool abort_all_requests = 3;
+  optional string weight_version = 4;
+  bool is_async = 5;
+  bool torch_empty_cache = 6;
+  bool keep_pause = 7;
+  bool recapture_cuda_graph = 8;
+  int64 token_step = 9;
+  bool flush_cache = 10 [
+    (sglang.json.v1.field_json).null_policy = NULL_POLICY_RESETS_DEFAULT,
+    (sglang.json.v1.field_json).default_bool = true
+  ];
+  // Tensor metadata, passed through to the scheduler unchanged.
+  optional string manifest = 11 [(sglang.json.v1.field_json).raw_json = true];
+}
+
+message UpdateWeightsFromDiskResponse {
+  bool success = 1;
+  string message = 2;
+  int64 num_paused_requests = 3;
+}
+
+message UpdateWeightVersionRequest {
+  // Required and non-null in the Python HTTP API; handlers validate presence.
+  optional string new_version = 1;
+  bool abort_all_requests = 2 [
+    (sglang.json.v1.field_json).null_policy = NULL_POLICY_RESETS_DEFAULT,
+    (sglang.json.v1.field_json).default_bool = true
+  ];
+}
+
+message UpdateWeightVersionResponse {
+  bool success = 1;
+  string message = 2;
+  // Present only on success, as in the Python response.
+  optional string new_version = 3;
+}

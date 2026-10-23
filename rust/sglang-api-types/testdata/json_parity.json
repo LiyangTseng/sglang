@@ -583,6 +583,165 @@
         "hicache_write_policy": ""
       },
       "canonical": "{\"hicache_storage_backend\":\"file\",\"hicache_storage_backend_extra_config_json\":\"\",\"hicache_storage_prefetch_policy\":\"\",\"hicache_write_policy\":\"\"}"
+    },
+    {
+      "type": "PauseGenerationRequest",
+      "name": "absent mode defaults to abort",
+      "input": {},
+      "canonical": "{\"mode\":\"abort\"}"
+    },
+    {
+      "type": "PauseGenerationRequest",
+      "name": "in_place mode",
+      "input": {
+        "mode": "in_place"
+      },
+      "canonical": "{\"mode\":\"in_place\"}"
+    },
+    {
+      "type": "PauseGenerationRequest",
+      "name": "unknown fields ignored",
+      "input": {
+        "mode": "retract",
+        "unknown_option": true
+      },
+      "canonical": "{\"mode\":\"retract\"}"
+    },
+    {
+      "type": "ContinueGenerationRequest",
+      "name": "absent torch_empty_cache defaults to true",
+      "input": {},
+      "canonical": "{\"torch_empty_cache\":true}"
+    },
+    {
+      "type": "ContinueGenerationRequest",
+      "name": "torch_empty_cache disabled",
+      "input": {
+        "torch_empty_cache": false
+      },
+      "canonical": "{\"torch_empty_cache\":false}"
+    },
+    {
+      "type": "GenerationControlResponse",
+      "name": "fixed pause acknowledgement",
+      "input": {
+        "message": "Generation paused successfully.",
+        "status": "ok"
+      },
+      "canonical": "{\"message\":\"Generation paused successfully.\",\"status\":\"ok\"}"
+    },
+    {
+      "type": "UpdateWeightsFromDiskRequest",
+      "name": "only the model path",
+      "input": {
+        "model_path": "Qwen/Qwen3-0.6B"
+      },
+      "canonical": "{\"model_path\":\"Qwen/Qwen3-0.6B\",\"abort_all_requests\":false,\"is_async\":false,\"torch_empty_cache\":false,\"keep_pause\":false,\"recapture_cuda_graph\":false,\"token_step\":0,\"flush_cache\":true}"
+    },
+    {
+      "type": "UpdateWeightsFromDiskRequest",
+      "name": "every field set",
+      "input": {
+        "model_path": "/ckpt/step-10",
+        "load_format": "auto",
+        "abort_all_requests": true,
+        "weight_version": "v2",
+        "is_async": true,
+        "torch_empty_cache": true,
+        "keep_pause": true,
+        "recapture_cuda_graph": true,
+        "token_step": 10,
+        "flush_cache": false,
+        "manifest": {
+          "layers": [
+            {
+              "name": "w",
+              "shape": [
+                2,
+                3
+              ]
+            }
+          ],
+          "dtype": "bfloat16"
+        }
+      },
+      "canonical": "{\"model_path\":\"/ckpt/step-10\",\"load_format\":\"auto\",\"abort_all_requests\":true,\"weight_version\":\"v2\",\"is_async\":true,\"torch_empty_cache\":true,\"keep_pause\":true,\"recapture_cuda_graph\":true,\"token_step\":10,\"flush_cache\":false,\"manifest\":{\"layers\":[{\"name\":\"w\",\"shape\":[2,3]}],\"dtype\":\"bfloat16\"}}"
+    },
+    {
+      "type": "UpdateWeightsFromDiskRequest",
+      "name": "nullable fields explicitly null",
+      "input": {
+        "model_path": "m",
+        "load_format": null,
+        "weight_version": null,
+        "manifest": null
+      },
+      "canonical": "{\"model_path\":\"m\",\"abort_all_requests\":false,\"is_async\":false,\"torch_empty_cache\":false,\"keep_pause\":false,\"recapture_cuda_graph\":false,\"token_step\":0,\"flush_cache\":true}"
+    },
+    {
+      "type": "UpdateWeightsFromDiskRequest",
+      "name": "unknown fields ignored",
+      "input": {
+        "model_path": "m",
+        "unknown_option": 1
+      },
+      "canonical": "{\"model_path\":\"m\",\"abort_all_requests\":false,\"is_async\":false,\"torch_empty_cache\":false,\"keep_pause\":false,\"recapture_cuda_graph\":false,\"token_step\":0,\"flush_cache\":true}"
+    },
+    {
+      "type": "UpdateWeightsFromDiskResponse",
+      "name": "success",
+      "input": {
+        "success": true,
+        "message": "Succeeded to update model weights. Weight version updated to v2.",
+        "num_paused_requests": 0
+      },
+      "canonical": "{\"success\":true,\"message\":\"Succeeded to update model weights. Weight version updated to v2.\",\"num_paused_requests\":0}"
+    },
+    {
+      "type": "UpdateWeightsFromDiskResponse",
+      "name": "scheduler failure",
+      "input": {
+        "success": false,
+        "message": "Failed to update weights",
+        "num_paused_requests": 3
+      },
+      "canonical": "{\"success\":false,\"message\":\"Failed to update weights\",\"num_paused_requests\":3}"
+    },
+    {
+      "type": "UpdateWeightVersionRequest",
+      "name": "absent abort_all_requests defaults to true",
+      "input": {
+        "new_version": "v5"
+      },
+      "canonical": "{\"new_version\":\"v5\",\"abort_all_requests\":true}"
+    },
+    {
+      "type": "UpdateWeightVersionRequest",
+      "name": "abort disabled",
+      "input": {
+        "new_version": "v5",
+        "abort_all_requests": false
+      },
+      "canonical": "{\"new_version\":\"v5\",\"abort_all_requests\":false}"
+    },
+    {
+      "type": "UpdateWeightVersionResponse",
+      "name": "success echoes the new version",
+      "input": {
+        "success": true,
+        "message": "Weight version updated to v5",
+        "new_version": "v5"
+      },
+      "canonical": "{\"success\":true,\"message\":\"Weight version updated to v5\",\"new_version\":\"v5\"}"
+    },
+    {
+      "type": "UpdateWeightVersionResponse",
+      "name": "failure omits the new version",
+      "input": {
+        "success": false,
+        "message": "Failed to update weight version: boom"
+      },
+      "canonical": "{\"success\":false,\"message\":\"Failed to update weight version: boom\"}"
     }
   ]
 }

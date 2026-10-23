@@ -796,6 +796,80 @@ pub struct HiCacheStorageResponse {
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PauseGenerationRequest {
+    /// One of "abort", "in_place" or "retract"; handlers reject anything else.
+    #[prost(string, tag = "1")]
+    pub mode: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContinueGenerationRequest {
+    #[prost(bool, tag = "1")]
+    pub torch_empty_cache: bool,
+}
+/// Python's fixed acknowledgement for pause and continue: the request is sent
+/// to the scheduler without waiting for a reply.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GenerationControlResponse {
+    #[prost(string, tag = "1")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub status: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateWeightsFromDiskRequest {
+    /// Required and non-null in the Python HTTP API; handlers validate presence.
+    #[prost(string, optional, tag = "1")]
+    pub model_path: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub load_format: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag = "3")]
+    pub abort_all_requests: bool,
+    #[prost(string, optional, tag = "4")]
+    pub weight_version: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag = "5")]
+    pub is_async: bool,
+    #[prost(bool, tag = "6")]
+    pub torch_empty_cache: bool,
+    #[prost(bool, tag = "7")]
+    pub keep_pause: bool,
+    #[prost(bool, tag = "8")]
+    pub recapture_cuda_graph: bool,
+    #[prost(int64, tag = "9")]
+    pub token_step: i64,
+    #[prost(bool, tag = "10")]
+    pub flush_cache: bool,
+    /// Tensor metadata, passed through to the scheduler unchanged.
+    #[prost(string, optional, tag = "11")]
+    pub manifest: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateWeightsFromDiskResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(int64, tag = "3")]
+    pub num_paused_requests: i64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateWeightVersionRequest {
+    /// Required and non-null in the Python HTTP API; handlers validate presence.
+    #[prost(string, optional, tag = "1")]
+    pub new_version: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag = "2")]
+    pub abort_all_requests: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateWeightVersionResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    /// Present only on success, as in the Python response.
+    #[prost(string, optional, tag = "3")]
+    pub new_version: ::core::option::Option<::prost::alloc::string::String>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListModelsRequest {}
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -10,6 +10,7 @@ package sglang.api.v1;
 
 import "sglang/api/v1/generate.proto";
 import "sglang/api/v1/hicache.proto";
+import "sglang/api/v1/weight_update.proto";
 import "sglang/json/v1/options.proto";
 
 service SglangService {

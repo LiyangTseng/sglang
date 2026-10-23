@@ -33,7 +33,11 @@ from sglang.api.v1.api_types import (
 from sglang.srt.managers.io_struct import (
     AttachHiCacheStorageReqInput,
     BaseReq,
+    ContinueGenerationReqInput,
     GenerateReqInput,
+    PauseGenerationReqInput,
+    UpdateWeightFromDiskReqInput,
+    UpdateWeightVersionReqInput,
 )
 from sglang.srt.sampling.sampling_params import SamplingParams as PySamplingParams
 
@@ -158,6 +162,37 @@ class TestHiCacheRequestParity(CustomTestCase):
                 self.assertIsNotNone(generated.hicache_storage_backend)
                 for name in generated.__struct_fields__:
                     self.assertEqual(getattr(generated, name), getattr(python, name))
+
+
+class TestWeightUpdateRequestParity(CustomTestCase):
+    PAIRS = (
+        (api_types.PauseGenerationRequest, PauseGenerationReqInput),
+        (api_types.ContinueGenerationRequest, ContinueGenerationReqInput),
+        (api_types.UpdateWeightsFromDiskRequest, UpdateWeightFromDiskReqInput),
+        (api_types.UpdateWeightVersionRequest, UpdateWeightVersionReqInput),
+    )
+
+    def test_fields_match_python(self):
+        """Only scheduler transport fields are excluded from the public requests."""
+        for generated, python in self.PAIRS:
+            with self.subTest(request=generated.__name__):
+                self.assertEqual(
+                    set(generated.__struct_fields__),
+                    set(python.__struct_fields__) - set(BaseReq.__struct_fields__),
+                )
+
+    def test_fixtures_match_python_validation_and_defaults(self):
+        """Decode using the same Pydantic adapter as the Python HTTP endpoints."""
+        for generated, python in self.PAIRS:
+            adapter = TypeAdapter(python)
+            for case in load_fixtures():
+                if case["type"] != generated.__name__:
+                    continue
+                with self.subTest(case=f"{case['type']}: {case['name']}"):
+                    expected = adapter.validate_python(case["input"])
+                    actual = generated.from_json_value(case["input"])
+                    for name in actual.__struct_fields__:
+                        self.assertEqual(getattr(actual, name), getattr(expected, name))
 
 
 class TestRequestFieldParity(CustomTestCase):

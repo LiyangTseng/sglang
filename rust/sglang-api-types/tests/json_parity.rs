@@ -65,6 +65,27 @@ fn fixtures_decode_to_their_canonical_bytes() {
             "DetokenizeResponse" => check::<api::DetokenizeResponse>(&name, input, canonical),
             "AbortRequest" => check::<api::AbortRequest>(&name, input, canonical),
             "AbortResponse" => check::<api::AbortResponse>(&name, input, canonical),
+            "PauseGenerationRequest" => {
+                check::<api::PauseGenerationRequest>(&name, input, canonical)
+            }
+            "ContinueGenerationRequest" => {
+                check::<api::ContinueGenerationRequest>(&name, input, canonical)
+            }
+            "GenerationControlResponse" => {
+                check::<api::GenerationControlResponse>(&name, input, canonical)
+            }
+            "UpdateWeightsFromDiskRequest" => {
+                check::<api::UpdateWeightsFromDiskRequest>(&name, input, canonical)
+            }
+            "UpdateWeightsFromDiskResponse" => {
+                check::<api::UpdateWeightsFromDiskResponse>(&name, input, canonical)
+            }
+            "UpdateWeightVersionRequest" => {
+                check::<api::UpdateWeightVersionRequest>(&name, input, canonical)
+            }
+            "UpdateWeightVersionResponse" => {
+                check::<api::UpdateWeightVersionResponse>(&name, input, canonical)
+            }
             other => panic!("fixture type {other} has no Rust mapping; add it here"),
         }
     }
