@@ -169,6 +169,20 @@ impl SglangService for Mock {
     ) -> Result<Response<api::GenerationControlResponse>, Status> {
         Err(Status::unimplemented("continue_generation"))
     }
+
+    async fn update_weights_from_disk(
+        &self,
+        _: Request<api::UpdateWeightsFromDiskRequest>,
+    ) -> Result<Response<api::UpdateWeightsFromDiskResponse>, Status> {
+        Err(Status::unimplemented("update_weights_from_disk"))
+    }
+
+    async fn update_weight_version(
+        &self,
+        _: Request<api::UpdateWeightVersionRequest>,
+    ) -> Result<Response<api::UpdateWeightVersionResponse>, Status> {
+        Err(Status::unimplemented("update_weight_version"))
+    }
 }
 
 /// Bind on a free port and serve the mock on its own runtime thread, so the

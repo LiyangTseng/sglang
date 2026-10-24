@@ -1,5 +1,5 @@
-//! Pause and continue routes, sharing the weight update manager with the gRPC
-//! adapter.
+//! Pause, continue and weight update routes, sharing the weight update
+//! manager with the gRPC adapter.
 
 use std::sync::Arc;
 
@@ -12,13 +12,15 @@ use axum::{
 };
 use sglang_api_types::api::v1 as api;
 
-use crate::api_server::core::{CoreError, WeightUpdateManager};
+use crate::api_server::core::{CoreError, DiskUpdate, VersionUpdate, WeightUpdateManager};
 use crate::message::io_struct::PauseMode;
 
 pub(super) fn routes(manager: Arc<WeightUpdateManager>) -> Router {
     Router::new()
         .route("/pause_generation", post(pause))
         .route("/continue_generation", post(continue_generation))
+        .route("/update_weights_from_disk", post(update_weights_from_disk))
+        .route("/update_weight_version", post(update_weight_version))
         .with_state(manager)
 }
 
@@ -46,6 +48,50 @@ async fn continue_generation(
         Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error.body_text()).into_response(),
     };
     control_response(manager.continue_generation(body.torch_empty_cache).await)
+}
+
+async fn update_weights_from_disk(
+    State(manager): State<Arc<WeightUpdateManager>>,
+    body: Result<Json<api::UpdateWeightsFromDiskRequest>, JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error.body_text()).into_response(),
+    };
+    let update = match DiskUpdate::try_from(body) {
+        Ok(update) => update,
+        Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error).into_response(),
+    };
+    match manager.update_weights_from_disk(update).await {
+        Ok(output) => (success_status(output.success), Json(output)).into_response(),
+        Err(error) => (error.http_status(), error.to_string()).into_response(),
+    }
+}
+
+async fn update_weight_version(
+    State(manager): State<Arc<WeightUpdateManager>>,
+    body: Result<Json<api::UpdateWeightVersionRequest>, JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error.body_text()).into_response(),
+    };
+    let update = match VersionUpdate::try_from(body) {
+        Ok(update) => update,
+        Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error).into_response(),
+    };
+    match manager.update_weight_version(update).await {
+        Ok(output) => (success_status(output.success), Json(output)).into_response(),
+        Err(error) => (error.http_status(), error.to_string()).into_response(),
+    }
+}
+
+fn success_status(success: bool) -> StatusCode {
+    if success {
+        StatusCode::OK
+    } else {
+        StatusCode::BAD_REQUEST
+    }
 }
 
 fn control_response(result: Result<api::GenerationControlResponse, CoreError>) -> Response {
@@ -106,6 +152,16 @@ mod tests {
     /// Send one request and play intake for the unanswered control it sends,
     /// checking its wire form.
     async fn exchange(uri: &str, body: &str, wire: Value) -> (StatusCode, String) {
+        exchange_replying(uri, body, wire, ResponseItem::Control(Bytes::new())).await
+    }
+
+    /// [`exchange`] for an answered control, replying with `reply`.
+    async fn exchange_replying(
+        uri: &str,
+        body: &str,
+        wire: Value,
+        reply: ResponseItem,
+    ) -> (StatusCode, String) {
         let (router, intake) = app();
         let response = tokio::spawn(router.oneshot(post(uri, body)));
         let TmEvent::Intake { request, admission } =
@@ -123,11 +179,98 @@ mod tests {
         let mut header: Value = rmp_serde::from_slice(&control.encode().unwrap()).unwrap();
         header[1] = Value::Null; // a fresh rid per request
         assert_eq!(header, wire);
-        request
-            .sink
-            .try_send(ResponseItem::Control(Bytes::new()))
-            .unwrap();
-        into_parts(response.await.unwrap().unwrap()).await
+        request.sink.try_send(reply).unwrap();
+        let (status, body) = into_parts(response.await.unwrap().unwrap()).await;
+        // Normalize JSON key order, preserving plain-text errors.
+        let body = serde_json::from_str::<Value>(&body).map_or(body, |value| value.to_string());
+        (status, body)
+    }
+
+    fn named(value: Value) -> ResponseItem {
+        ResponseItem::Control(Bytes::from(rmp_serde::to_vec_named(&value).unwrap()))
+    }
+
+    /// Python's statuses: 200 on success, 400 with the same body on a
+    /// scheduler failure.
+    #[tokio::test]
+    async fn update_weights_from_disk_relays_success_and_failure() {
+        for (success, status) in [(true, StatusCode::OK), (false, StatusCode::BAD_REQUEST)] {
+            assert_eq!(
+                exchange_replying(
+                    "/update_weights_from_disk",
+                    r#"{"model_path":"/ckpt/2","manifest":{"w":[2,3]}}"#,
+                    json!([
+                        "UpdateWeightFromDiskReqInput", null, null, "/ckpt/2", null, false,
+                        null, false, false, false, false, 0, true, {"w": [2, 3]}
+                    ]),
+                    named(json!({"success": success, "message": "m", "num_paused_requests": 0})),
+                )
+                .await,
+                (
+                    status,
+                    json!({"success": success, "message": "m", "num_paused_requests": 0})
+                        .to_string()
+                )
+            );
+        }
+    }
+
+    /// An explicit null on a field with a non-zero default reads as that
+    /// default; Python returns 422, a deviation the generated types impose.
+    #[tokio::test]
+    async fn null_on_a_defaulted_field_reads_as_the_default() {
+        let (status, _) = exchange_replying(
+            "/update_weights_from_disk",
+            r#"{"model_path":"m","flush_cache":null}"#,
+            json!([
+                "UpdateWeightFromDiskReqInput",
+                null,
+                null,
+                "m",
+                null,
+                false,
+                null,
+                false,
+                false,
+                false,
+                false,
+                0,
+                true,
+                null
+            ]),
+            named(json!({"success": true, "message": "m"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn update_weight_version_relays_success_and_failure() {
+        assert_eq!(
+            exchange_replying(
+                "/update_weight_version",
+                r#"{"new_version":"v5"}"#,
+                json!(["UpdateWeightVersionReqInput", null, null, "v5", true]),
+                named(json!({})),
+            )
+            .await,
+            (
+                StatusCode::OK,
+                json!({"success": true, "message": "Weight version updated to v5", "new_version": "v5"})
+                    .to_string()
+            )
+        );
+        let (status, body) = exchange_replying(
+            "/update_weight_version",
+            r#"{"new_version":"v6","abort_all_requests":false}"#,
+            json!(["UpdateWeightVersionReqInput", null, null, "v6", false]),
+            ResponseItem::Error(crate::utils::error::Error::Internal("boom".into())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["success"], false);
+        assert!(body.get("new_version").is_none());
     }
 
     /// Python's fixed acknowledgement, sent once the scheduler has the request.
@@ -187,6 +330,14 @@ mod tests {
             ("/pause_generation", r#"{"mode":1}"#),
             ("/pause_generation", "not json"),
             ("/continue_generation", r#"{"torch_empty_cache":"yes"}"#),
+            ("/update_weights_from_disk", "{}"),
+            ("/update_weights_from_disk", r#"{"model_path":null}"#),
+            (
+                "/update_weights_from_disk",
+                r#"{"model_path":"m","manifest":[1]}"#,
+            ),
+            ("/update_weight_version", "{}"),
+            ("/update_weight_version", r#"{"new_version":null}"#),
         ] {
             let (router, intake) = app();
             let (status, _) = into_parts(router.oneshot(post(uri, body)).await.unwrap()).await;

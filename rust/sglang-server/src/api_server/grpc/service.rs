@@ -11,7 +11,9 @@ use sglang_api_types::api::v1::sglang_service_server::SglangService;
 use tonic::{Request, Response, Status};
 
 use super::{info, native_api};
-use crate::api_server::core::{CoreHandle, HealthStatus, HiCacheManager, WeightUpdateManager};
+use crate::api_server::core::{
+    CoreHandle, DiskUpdate, HealthStatus, HiCacheManager, VersionUpdate, WeightUpdateManager,
+};
 use crate::message::config::{PreferredSamplingParams, ServerArgs};
 use crate::message::io_struct::PauseMode;
 use crate::message::request::{GenerationPolicy, into_requests};
@@ -245,6 +247,34 @@ impl SglangService for GrpcService {
         let output = self
             .weight_update_manager
             .continue_generation(request.into_inner().torch_empty_cache)
+            .await
+            .map_err(native_api::status)?;
+        Ok(Response::new(output))
+    }
+
+    async fn update_weights_from_disk(
+        &self,
+        request: Request<api::UpdateWeightsFromDiskRequest>,
+    ) -> Result<Response<api::UpdateWeightsFromDiskResponse>, Status> {
+        let update =
+            DiskUpdate::try_from(request.into_inner()).map_err(Status::invalid_argument)?;
+        let output = self
+            .weight_update_manager
+            .update_weights_from_disk(update)
+            .await
+            .map_err(native_api::status)?;
+        Ok(Response::new(output))
+    }
+
+    async fn update_weight_version(
+        &self,
+        request: Request<api::UpdateWeightVersionRequest>,
+    ) -> Result<Response<api::UpdateWeightVersionResponse>, Status> {
+        let update =
+            VersionUpdate::try_from(request.into_inner()).map_err(Status::invalid_argument)?;
+        let output = self
+            .weight_update_manager
+            .update_weight_version(update)
             .await
             .map_err(native_api::status)?;
         Ok(Response::new(output))
@@ -989,6 +1019,65 @@ mod tests {
         let (response, ()) = tokio::join!(resume, ack("ContinueGenerationReqInput"));
         assert_eq!(response.unwrap().into_inner().status, "ok");
         assert!(h.abort_rx.try_recv().is_err());
+    }
+
+    /// A scheduler failure is a success=false body, not a gRPC error; a
+    /// missing model_path is INVALID_ARGUMENT before anything is sent.
+    #[tokio::test]
+    async fn update_weights_from_disk_reports_failure_in_the_body() {
+        let h = Harness::new(1, false, Duration::from_secs(1));
+        let error = h
+            .service
+            .update_weights_from_disk(Request::new(api::UpdateWeightsFromDiskRequest::default()))
+            .await
+            .expect_err("model_path is required");
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert!(h.intake_rx.try_recv().is_err());
+
+        let update =
+            h.service
+                .update_weights_from_disk(Request::new(api::UpdateWeightsFromDiskRequest {
+                    model_path: Some("m".into()),
+                    ..Default::default()
+                }));
+        let scheduler = async {
+            let TmEvent::Intake { request, admission } = h.intake_rx.recv_async().await.unwrap()
+            else {
+                panic!("expected control intake");
+            };
+            assert!(admission.try_accept());
+            request
+                .sink
+                .try_send(ResponseItem::Control(bytes::Bytes::from(
+                    rmp_serde::to_vec_named(&serde_json::json!({
+                        "success": false, "message": "boom", "num_paused_requests": 2,
+                    }))
+                    .unwrap(),
+                )))
+                .unwrap();
+        };
+        let (response, ()) = tokio::join!(update, scheduler);
+        let response = response.unwrap().into_inner();
+        assert_eq!(
+            (
+                response.success,
+                response.message.as_str(),
+                response.num_paused_requests
+            ),
+            (false, "boom", 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn update_weight_version_requires_new_version() {
+        let h = Harness::new(1, false, Duration::from_secs(1));
+        let error = h
+            .service
+            .update_weight_version(Request::new(api::UpdateWeightVersionRequest::default()))
+            .await
+            .expect_err("new_version is required");
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert!(h.intake_rx.try_recv().is_err());
     }
 
     #[tokio::test]

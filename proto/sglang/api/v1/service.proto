@@ -58,6 +58,16 @@ service SglangService {
 
   // `/continue_generation`: resume the scheduler, then admit waiting generations.
   rpc ContinueGeneration(ContinueGenerationRequest) returns (GenerationControlResponse);
+
+  // `/update_weights_from_disk`: unless paused, waits for every generation to
+  // end and holds new ones until the scheduler replies. A scheduler failure is
+  // success=false; INVALID_ARGUMENT for a missing model_path or a non-object
+  // manifest.
+  rpc UpdateWeightsFromDisk(UpdateWeightsFromDiskRequest) returns (UpdateWeightsFromDiskResponse);
+
+  // `/update_weight_version`: relabel the loaded weights. A scheduler failure
+  // is success=false; INVALID_ARGUMENT for a missing new_version.
+  rpc UpdateWeightVersion(UpdateWeightVersionRequest) returns (UpdateWeightVersionResponse);
 }
 
 message ListModelsRequest {}

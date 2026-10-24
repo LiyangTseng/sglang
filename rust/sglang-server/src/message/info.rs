@@ -32,6 +32,9 @@ pub(crate) struct ServerInfo {
     pub(crate) launch_fields: Arc<serde_json::Map<String, serde_json::Value>>,
     pub(crate) model_path: String,
     pub(crate) served_model_name: String,
+    /// Written over the launch-time fields, which a weight update makes stale.
+    pub(crate) load_format: Option<String>,
+    pub(crate) weight_version: Option<String>,
     pub(crate) tokenizer_path: String,
     pub(crate) max_context_length: u64,
     pub(crate) max_total_num_tokens: u64,

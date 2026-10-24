@@ -301,3 +301,271 @@ async fn health_probe_stalls_while_paused() {
     assert!(matches!(status, HealthStatus::Stalled));
     h.assert_no_intake().await;
 }
+
+impl Harness {
+    /// Play the scheduler for one answered control: check its tag, return
+    /// its wire fields after the `BaseReq` preamble, and send `reply`.
+    async fn answer_control(&self, tag: &str, reply: serde_json::Value) -> Vec<serde_json::Value> {
+        let request = self.next_intake().await;
+        let RequestKind::Control(control) = &request.kind else {
+            panic!("expected a control request");
+        };
+        let wire: Vec<serde_json::Value> =
+            rmp_serde::from_slice(&control.encode().unwrap()).unwrap();
+        assert_eq!(wire[0], tag);
+        request
+            .sink
+            .try_send(ResponseItem::Control(Bytes::from(
+                rmp_serde::to_vec_named(&reply).unwrap(),
+            )))
+            .unwrap();
+        wire[3..].to_vec()
+    }
+
+    fn update(
+        &self,
+        body: serde_json::Value,
+    ) -> tokio::task::JoinHandle<Result<api::UpdateWeightsFromDiskResponse, CoreError>> {
+        let body: api::UpdateWeightsFromDiskRequest = serde_json::from_value(body).unwrap();
+        let update = DiskUpdate::try_from(body).unwrap();
+        let manager = self.manager.clone();
+        tokio::spawn(async move { manager.update_weights_from_disk(update).await })
+    }
+}
+
+fn disk_reply(success: bool, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "rid": "x", "http_worker_ipc": null,
+        "success": success, "message": message, "num_paused_requests": 0,
+    })
+}
+
+/// An update while generating is a weight writer: it waits for every lease,
+/// and new generations wait until the scheduler has replied.
+#[tokio::test]
+async fn an_unpaused_update_waits_for_leases_and_holds_off_new_generations() {
+    let h = Harness::new();
+    let call = finished(h.generate()).await.unwrap();
+    h.next_intake().await;
+
+    let mut update = h.update(serde_json::json!({"model_path": "/ckpt/2"}));
+    h.assert_no_intake().await;
+    assert_pending(&mut update).await;
+    let mut late = h.generate();
+    assert_pending(&mut late).await;
+
+    drop(call);
+    let request = h.next_intake().await;
+    let RequestKind::Control(_) = &request.kind else {
+        panic!("the update reaches the scheduler before the waiting generation");
+    };
+    h.assert_no_intake().await; // the writer still holds off `late`
+    request
+        .sink
+        .try_send(ResponseItem::Control(Bytes::from(
+            rmp_serde::to_vec_named(&disk_reply(true, "ok.")).unwrap(),
+        )))
+        .unwrap();
+    assert!(finished(update).await.unwrap().success);
+    assert!(matches!(
+        h.next_intake().await.kind,
+        RequestKind::Generate(_)
+    ));
+    finished(late).await.unwrap();
+}
+
+/// An update while paused skips the writer: an in-place pause keeps leases
+/// that are never released, so waiting for them would deadlock.
+#[tokio::test]
+async fn a_paused_update_does_not_wait_for_leases() {
+    let h = Harness::new();
+    let _call = finished(h.generate()).await.unwrap();
+    h.next_intake().await;
+    h.pause(PauseMode::InPlace).await;
+
+    let update = h.update(serde_json::json!({"model_path": "/ckpt/2"}));
+    h.answer_control("UpdateWeightFromDiskReqInput", disk_reply(true, "ok."))
+        .await;
+    assert!(finished(update).await.unwrap().success);
+}
+
+/// A successful update moves the model identity /model_info reports, and a
+/// weight_version adds Python's message suffix; a failure moves nothing.
+#[tokio::test]
+async fn a_successful_update_moves_the_model_identity() {
+    let h = Harness::new();
+    let update = h.update(serde_json::json!({
+        "model_path": "/ckpt/2", "load_format": "safetensors", "weight_version": "v2",
+    }));
+    let fields = h
+        .answer_control(
+            "UpdateWeightFromDiskReqInput",
+            disk_reply(true, "Succeeded to update model weights."),
+        )
+        .await;
+    assert_eq!(fields[0], "/ckpt/2");
+    assert_eq!(fields[1], "safetensors");
+    let response = finished(update).await.unwrap();
+    assert_eq!(
+        response.message,
+        "Succeeded to update model weights. Weight version updated to v2."
+    );
+    let info = h.core.model_info();
+    assert_eq!(info.model_path, "/ckpt/2");
+    assert_eq!(info.served_model_name, "/ckpt/2");
+    assert_eq!(info.load_format.as_deref(), Some("safetensors"));
+    assert_eq!(info.weight_version.as_deref(), Some("v2"));
+
+    // An absent load_format is the one in effect; a failure changes nothing.
+    let update = h.update(serde_json::json!({"model_path": "/ckpt/3", "weight_version": "v3"}));
+    let fields = h
+        .answer_control("UpdateWeightFromDiskReqInput", disk_reply(false, "boom"))
+        .await;
+    assert_eq!(fields[1], "safetensors");
+    let response = finished(update).await.unwrap();
+    assert!(!response.success);
+    assert_eq!(response.message, "boom");
+    let info = h.core.model_info();
+    assert_eq!(info.model_path, "/ckpt/2");
+    assert_eq!(info.weight_version.as_deref(), Some("v2"));
+}
+
+#[tokio::test]
+async fn update_abort_all_requests_aborts_generations_first() {
+    let h = Harness::new();
+    let _call = finished(h.generate()).await.unwrap();
+    let request = h.next_intake().await;
+    let update = h.update(serde_json::json!({"model_path": "m", "abort_all_requests": true}));
+    let AbortSource::Guard(aborted) = tokio::time::timeout(DEADLINE, h.abort_rx.recv_async())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("expected a scheduler abort");
+    };
+    assert_eq!(aborted, request.rid);
+    drop(_call);
+    h.answer_control("UpdateWeightFromDiskReqInput", disk_reply(true, "ok."))
+        .await;
+    assert!(finished(update).await.unwrap().success);
+}
+
+/// Python's `/update_weight_version`: abort by default, relabel on success,
+/// and report a failure in the body without changing the version.
+#[tokio::test]
+async fn update_weight_version_relabels_only_on_success() {
+    let h = Harness::new();
+    let _call = finished(h.generate()).await.unwrap();
+    h.next_intake().await;
+    let manager = h.manager.clone();
+    let update = VersionUpdate::try_from(api::UpdateWeightVersionRequest {
+        new_version: Some("v5".into()),
+        abort_all_requests: true,
+    })
+    .unwrap();
+    let relabel = tokio::spawn(async move { manager.update_weight_version(update).await });
+    assert!(h.abort_rx.recv_async().await.is_ok(), "aborted first");
+    let fields = h
+        .answer_control(
+            "UpdateWeightVersionReqInput",
+            serde_json::json!({"rid": "x", "http_worker_ipc": null}),
+        )
+        .await;
+    assert_eq!(
+        fields,
+        vec![serde_json::json!("v5"), serde_json::json!(true)]
+    );
+    let response = finished(relabel).await.unwrap();
+    assert_eq!(
+        (
+            response.success,
+            response.message.as_str(),
+            response.new_version.as_deref()
+        ),
+        (true, "Weight version updated to v5", Some("v5"))
+    );
+    assert_eq!(h.core.model_info().weight_version.as_deref(), Some("v5"));
+
+    let manager = h.manager.clone();
+    let update = VersionUpdate::try_from(api::UpdateWeightVersionRequest {
+        new_version: Some("v6".into()),
+        abort_all_requests: false,
+    })
+    .unwrap();
+    let relabel = tokio::spawn(async move { manager.update_weight_version(update).await });
+    let request = h.next_intake().await;
+    request
+        .sink
+        .try_send(ResponseItem::Error(crate::utils::error::Error::Internal(
+            "boom".into(),
+        )))
+        .unwrap();
+    let response = finished(relabel).await.unwrap();
+    assert!(!response.success);
+    assert!(
+        response
+            .message
+            .starts_with("Failed to update weight version: ")
+    );
+    assert_eq!(response.new_version, None);
+    assert_eq!(h.core.model_info().weight_version.as_deref(), Some("v5"));
+}
+
+/// Python's request validation: model_path and new_version are required and
+/// non-null, and a manifest must be an object.
+#[test]
+fn update_bodies_are_validated_like_python() {
+    let disk = |body: serde_json::Value| {
+        DiskUpdate::try_from(
+            serde_json::from_value::<api::UpdateWeightsFromDiskRequest>(body).unwrap(),
+        )
+    };
+    assert!(disk(serde_json::json!({})).is_err());
+    assert!(disk(serde_json::json!({"model_path": null})).is_err());
+    assert!(disk(serde_json::json!({"model_path": "m", "manifest": [1]})).is_err());
+    assert!(disk(serde_json::json!({"model_path": "m", "manifest": null})).is_ok());
+    assert!(disk(serde_json::json!({"model_path": "m", "manifest": {"a": 1}})).is_ok());
+    let version = |body: serde_json::Value| {
+        VersionUpdate::try_from(
+            serde_json::from_value::<api::UpdateWeightVersionRequest>(body).unwrap(),
+        )
+    };
+    assert!(version(serde_json::json!({})).is_err());
+    assert!(version(serde_json::json!({"new_version": null})).is_err());
+    assert!(version(serde_json::json!({"new_version": "v"})).is_ok());
+}
+
+/// A relabel sent while a disk update that carries its own weight_version is
+/// in flight waits for it, so the version the server ends on is the one
+/// requested last, not whichever reply happens to land last.
+#[tokio::test]
+async fn a_relabel_waits_for_an_in_flight_disk_update() {
+    let h = Harness::new();
+    let update = h.update(serde_json::json!({"model_path": "/ckpt/2", "weight_version": "v2"}));
+    let request = h.next_intake().await;
+
+    let manager = h.manager.clone();
+    let relabel = VersionUpdate::try_from(api::UpdateWeightVersionRequest {
+        new_version: Some("v3".into()),
+        abort_all_requests: false,
+    })
+    .unwrap();
+    let mut relabel = tokio::spawn(async move { manager.update_weight_version(relabel).await });
+    h.assert_no_intake().await;
+    assert_pending(&mut relabel).await;
+
+    request
+        .sink
+        .try_send(ResponseItem::Control(Bytes::from(
+            rmp_serde::to_vec_named(&disk_reply(true, "ok.")).unwrap(),
+        )))
+        .unwrap();
+    assert!(finished(update).await.unwrap().success);
+    h.answer_control(
+        "UpdateWeightVersionReqInput",
+        serde_json::json!({"rid": "x", "http_worker_ipc": null}),
+    )
+    .await;
+    assert!(finished(relabel).await.unwrap().success);
+    assert_eq!(h.core.model_info().weight_version.as_deref(), Some("v3"));
+}

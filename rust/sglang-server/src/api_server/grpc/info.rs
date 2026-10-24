@@ -43,6 +43,9 @@ pub(super) fn server_info(info: ServerInfo) -> Result<api::GetServerInfoResponse
         launch_fields: _,
         model_path,
         served_model_name,
+        // Not in GetServerInfoResponse; GetModelInfo carries both.
+        load_format: _,
+        weight_version: _,
         tokenizer_path,
         max_context_length,
         max_total_num_tokens,

@@ -5,6 +5,7 @@
 
 use bytes::Bytes;
 use serde::Serialize;
+use sglang_api_types::api::v1 as api;
 
 use super::request::GenerateRequest;
 use super::sampling::SamplingParams;
@@ -123,6 +124,28 @@ control_messages! {
     /// Resume a paused scheduler.
     ContinueGenerationReqInput {
         torch_empty_cache: bool,
+    }
+
+    /// Reload the model weights from `model_path`.
+    UpdateWeightFromDiskReqInput {
+        model_path: String,
+        load_format: Option<String>,
+        abort_all_requests: bool,
+        weight_version: Option<String>,
+        is_async: bool,
+        torch_empty_cache: bool,
+        keep_pause: bool,
+        recapture_cuda_graph: bool,
+        token_step: i64,
+        flush_cache: bool,
+        /// A msgpack map: Python declares it `Optional[Dict[str, Any]]`.
+        manifest: Option<serde_json::Map<String, serde_json::Value>>,
+    }
+
+    /// Relabel the loaded weights without reloading them.
+    UpdateWeightVersionReqInput {
+        new_version: String,
+        abort_all_requests: bool,
     }
 }
 
@@ -263,6 +286,43 @@ impl ContinueGenerationReqInput {
         Self {
             rid,
             torch_empty_cache,
+        }
+    }
+}
+
+impl UpdateWeightFromDiskReqInput {
+    /// The caller resolves the fields Python validates or defaults before
+    /// sending; the rest are copied from `body` unchanged.
+    pub fn new(
+        rid: String,
+        model_path: String,
+        load_format: Option<String>,
+        manifest: Option<serde_json::Map<String, serde_json::Value>>,
+        body: &api::UpdateWeightsFromDiskRequest,
+    ) -> Self {
+        Self {
+            rid,
+            model_path,
+            load_format,
+            abort_all_requests: body.abort_all_requests,
+            weight_version: body.weight_version.clone(),
+            is_async: body.is_async,
+            torch_empty_cache: body.torch_empty_cache,
+            keep_pause: body.keep_pause,
+            recapture_cuda_graph: body.recapture_cuda_graph,
+            token_step: body.token_step,
+            flush_cache: body.flush_cache,
+            manifest,
+        }
+    }
+}
+
+impl UpdateWeightVersionReqInput {
+    pub fn new(rid: String, new_version: String, abort_all_requests: bool) -> Self {
+        Self {
+            rid,
+            new_version,
+            abort_all_requests,
         }
     }
 }
@@ -450,6 +510,100 @@ mod tests {
         );
     }
 
+    #[test]
+    fn update_weight_from_disk_req_msgpack_shape() {
+        let body = api::UpdateWeightsFromDiskRequest {
+            model_path: Some("ignored: the resolved path wins".into()),
+            load_format: None,
+            abort_all_requests: true,
+            weight_version: Some("v2".into()),
+            is_async: true,
+            torch_empty_cache: true,
+            keep_pause: true,
+            recapture_cuda_graph: true,
+            token_step: 10,
+            flush_cache: false,
+            manifest: None,
+        };
+        let manifest = serde_json::json!({"layers": [{"name": "w", "shape": [2, 3]}]});
+        let b = UpdateWeightFromDiskReqInput::new(
+            "7".into(),
+            "/ckpt/step-10".into(),
+            Some("auto".into()),
+            manifest.as_object().cloned(),
+            &body,
+        )
+        .encode()
+        .unwrap();
+        let val = rmpv::decode::read_value(&mut &b[..]).unwrap();
+        let arr = val.as_array().expect("array");
+        assert_eq!(
+            arr.len(),
+            14,
+            "UpdateWeightFromDiskReqInput = [tag, rid, http_ipc, model_path, load_format, \
+             abort_all_requests, weight_version, is_async, torch_empty_cache, keep_pause, \
+             recapture_cuda_graph, token_step, flush_cache, manifest]"
+        );
+        assert_eq!(arr[0].as_str(), Some("UpdateWeightFromDiskReqInput"));
+        assert_eq!(arr[1].as_str(), Some("7"));
+        assert!(arr[2].is_nil());
+        assert_eq!(arr[3].as_str(), Some("/ckpt/step-10"));
+        assert_eq!(arr[4].as_str(), Some("auto"));
+        assert_eq!(arr[5].as_bool(), Some(true), "abort_all_requests");
+        assert_eq!(arr[6].as_str(), Some("v2"), "weight_version");
+        for (i, name) in [
+            (7, "is_async"),
+            (8, "torch_empty_cache"),
+            (9, "keep_pause"),
+            (10, "recapture_cuda_graph"),
+        ] {
+            assert_eq!(arr[i].as_bool(), Some(true), "{name} at {i}");
+        }
+        assert_eq!(arr[11].as_i64(), Some(10), "token_step");
+        assert_eq!(arr[12].as_bool(), Some(false), "flush_cache");
+        // Python decodes `Dict[str, Any]`, so JSON text would fail.
+        let manifest = arr[13].as_map().expect("manifest must be a map");
+        let (key, layers) = &manifest[0];
+        assert_eq!(key.as_str(), Some("layers"));
+        let layer = layers.as_array().unwrap()[0].as_map().expect("nested map");
+        assert_eq!(layer[0].0.as_str(), Some("name"));
+        assert_eq!(layer[1].1.as_array().unwrap()[1].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn update_weight_from_disk_req_without_options_sends_nil() {
+        let body = api::UpdateWeightsFromDiskRequest {
+            flush_cache: true,
+            ..Default::default()
+        };
+        let b = UpdateWeightFromDiskReqInput::new("7".into(), "m".into(), None, None, &body)
+            .encode()
+            .unwrap();
+        let val = rmpv::decode::read_value(&mut &b[..]).unwrap();
+        let arr = val.as_array().expect("array");
+        assert!(arr[4].is_nil(), "load_format");
+        assert!(arr[6].is_nil(), "weight_version");
+        assert_eq!(arr[12].as_bool(), Some(true), "flush_cache");
+        assert!(arr[13].is_nil(), "manifest");
+    }
+
+    #[test]
+    fn update_weight_version_req_msgpack_shape() {
+        let b = UpdateWeightVersionReqInput::new("7".into(), "v5".into(), true)
+            .encode()
+            .unwrap();
+        let val = rmpv::decode::read_value(&mut &b[..]).unwrap();
+        let arr = val.as_array().expect("array");
+        assert_eq!(
+            arr.len(),
+            5,
+            "UpdateWeightVersionReqInput = [tag, rid, http_ipc, new_version, abort_all_requests]"
+        );
+        assert_eq!(arr[0].as_str(), Some("UpdateWeightVersionReqInput"));
+        assert_eq!(arr[3].as_str(), Some("v5"));
+        assert_eq!(arr[4].as_bool(), Some(true));
+    }
+
     /// The header must be positionally aligned: `input_embeds` (idx 5) /
     /// `token_type_ids` (idx 7) present as nil so `sampling_params` lands at idx 8 and
     /// the array reaches msgspec's min length. Regression guard for that decode failure.
@@ -508,7 +662,6 @@ mod tests {
     /// structs, so a positional array at the kv_hints slot fails to decode.
     #[test]
     fn header_kv_hints_are_map_encoded() {
-        use sglang_api_types::api::v1 as api;
         let kv_hints = crate::message::request::KvHintsEnvelope::try_from(api::KvHintsEnvelope {
             protocol_version: "1".into(),
             message_id: "m".into(),

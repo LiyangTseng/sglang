@@ -50,12 +50,10 @@ pub(crate) struct CoreConfig {
 /// depend on the full launch-configuration object.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CoreMetadata {
-    model_path: String,
-    served_model_name: String,
+    /// The launch-time identity; the handle keeps the live copy.
+    served: ServedModel,
     tokenizer_path: String,
     preferred_sampling_params: Option<crate::message::config::PreferredSamplingParams>,
-    weight_version: Option<String>,
-    load_format: Option<String>,
     reasoning_parser: Option<String>,
     tool_call_parser: Option<String>,
     disaggregation_mode: DisaggregationMode,
@@ -72,12 +70,14 @@ pub(crate) struct CoreMetadata {
 impl From<&ServerArgs> for CoreMetadata {
     fn from(args: &ServerArgs) -> Self {
         Self {
-            model_path: args.model_path.clone(),
-            served_model_name: args.served_model_name.clone(),
+            served: ServedModel {
+                model_path: args.model_path.clone(),
+                served_model_name: args.served_model_name.clone(),
+                load_format: args.load_format.clone(),
+                weight_version: args.weight_version.clone(),
+            },
             tokenizer_path: args.tokenizer_path.clone(),
             preferred_sampling_params: args.preferred_sampling_params.clone(),
-            weight_version: args.weight_version.clone(),
-            load_format: args.load_format.clone(),
             reasoning_parser: args.reasoning_parser.clone(),
             tool_call_parser: args.tool_call_parser.clone(),
             disaggregation_mode: args.disaggregation_mode,
@@ -91,6 +91,17 @@ impl From<&ServerArgs> for CoreMetadata {
             launch_server_info: args.launch_server_info.0.clone(),
         }
     }
+}
+
+/// The identity a weight update moves: Python's manager-owned `model_path`
+/// and `served_model_name`, and its `load_format` and `weight_version`
+/// overrides.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ServedModel {
+    pub(crate) model_path: String,
+    pub(crate) served_model_name: String,
+    pub(crate) load_format: Option<String>,
+    pub(crate) weight_version: Option<String>,
 }
 
 /// Cloneable capability for submitting work to the runtime pipeline.
@@ -114,6 +125,7 @@ struct CoreInner {
     /// when the pool starts (after the listeners are up).
     mm_processor: OnceLock<Arc<dyn MmProcessor>>,
     metadata: CoreMetadata,
+    served: std::sync::RwLock<ServedModel>,
     generations: Generations,
     gate: GenerationGate,
 }
@@ -134,6 +146,7 @@ impl CoreHandle {
                 is_disaggregation: config.is_disaggregation,
                 mm_limits: config.mm_limits,
                 mm_processor: OnceLock::new(),
+                served: std::sync::RwLock::new(config.metadata.served.clone()),
                 metadata: config.metadata,
                 generations: Generations::default(),
                 gate: GenerationGate::new(),
@@ -291,17 +304,27 @@ impl CoreHandle {
         })
     }
 
-    /// Return static model metadata without exposing the full launch config.
+    /// The model identity in effect, as the last weight update left it.
+    pub(crate) fn served_model(&self) -> ServedModel {
+        self.inner.served.read().unwrap().clone()
+    }
+
+    pub(super) fn update_served_model(&self, update: impl FnOnce(&mut ServedModel)) {
+        update(&mut self.inner.served.write().unwrap());
+    }
+
+    /// Return model metadata without exposing the full launch config.
     pub(crate) fn model_info(&self) -> ModelInfo {
         let metadata = &self.inner.metadata;
+        let served = self.served_model();
         ModelInfo {
-            model_path: metadata.model_path.clone(),
-            served_model_name: metadata.served_model_name.clone(),
+            model_path: served.model_path,
+            served_model_name: served.served_model_name,
             tokenizer_path: metadata.tokenizer_path.clone(),
             is_generation: true,
             preferred_sampling_params: metadata.preferred_sampling_params.clone(),
-            weight_version: metadata.weight_version.clone(),
-            load_format: metadata.load_format.clone(),
+            weight_version: served.weight_version,
+            load_format: served.load_format,
             reasoning_parser: metadata.reasoning_parser.clone(),
             tool_call_parser: metadata.tool_call_parser.clone(),
             disaggregation_mode: metadata.disaggregation_mode,
@@ -312,9 +335,10 @@ impl CoreHandle {
     /// This is static metadata; no runtime request is submitted.
     pub(crate) fn list_models(&self) -> Vec<api::ModelCard> {
         let metadata = &self.inner.metadata;
+        let served_model_name = self.served_model().served_model_name;
         vec![api::ModelCard {
-            id: metadata.served_model_name.clone(),
-            root: metadata.served_model_name.clone(),
+            id: served_model_name.clone(),
+            root: served_model_name,
             parent: None,
             max_model_len: metadata.max_context_length,
         }]
@@ -326,10 +350,13 @@ impl CoreHandle {
     pub(crate) async fn server_info(&self) -> Result<ServerInfo, CoreError> {
         let mut internal_state = self.internal_state().await?;
         let metadata = &self.inner.metadata;
+        let served = self.served_model();
         Ok(ServerInfo {
             launch_fields: metadata.launch_server_info.clone(),
-            model_path: metadata.model_path.clone(),
-            served_model_name: metadata.served_model_name.clone(),
+            model_path: served.model_path,
+            served_model_name: served.served_model_name,
+            load_format: served.load_format,
+            weight_version: served.weight_version,
             tokenizer_path: metadata.tokenizer_path.clone(),
             max_context_length: metadata.max_context_length,
             max_total_num_tokens: metadata.max_total_num_tokens,
@@ -1144,7 +1171,10 @@ mod tests {
                 is_disaggregation: false,
                 mm_limits: Vec::new(),
                 metadata: CoreMetadata {
-                    served_model_name: "served-model".into(),
+                    served: ServedModel {
+                        served_model_name: "served-model".into(),
+                        ..Default::default()
+                    },
                     max_context_length: 1_u64 << 32,
                     ..Default::default()
                 },
