@@ -114,6 +114,52 @@ control_messages! {
         hicache_storage_prefetch_policy: Option<String>,
         hicache_write_policy: Option<String>,
     }
+
+    /// Pause the scheduler's event loop in place or by retracting its requests.
+    PauseGenerationReqInput {
+        mode: PauseMode,
+    }
+
+    /// Resume a paused scheduler.
+    ContinueGenerationReqInput {
+        torch_empty_cache: bool,
+    }
+}
+
+impl ControlRequest {
+    /// False for the messages whose Python scheduler handler returns nothing:
+    /// waiting for their reply would wait forever.
+    pub(crate) fn scheduler_replies(&self) -> bool {
+        !matches!(
+            self,
+            Self::PauseGenerationReqInput(_) | Self::ContinueGenerationReqInput(_)
+        )
+    }
+}
+
+/// `PauseGenerationReqInput.mode`, a `Literal` in Python, so msgspec rejects
+/// any other string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PauseMode {
+    Abort,
+    InPlace,
+    Retract,
+}
+
+impl std::str::FromStr for PauseMode {
+    type Err = Error;
+
+    fn from_str(mode: &str) -> Result<Self, Self::Err> {
+        match mode {
+            "abort" => Ok(Self::Abort),
+            "in_place" => Ok(Self::InPlace),
+            "retract" => Ok(Self::Retract),
+            other => Err(Error::Validation(format!(
+                "invalid pause mode {other:?}: expected \"abort\", \"in_place\" or \"retract\""
+            ))),
+        }
+    }
 }
 
 /// Borrow a request as its wire struct, resolving `Option` scalars to the wire
@@ -202,6 +248,21 @@ impl AttachHiCacheStorageReqInput {
             hicache_storage_backend_extra_config_json,
             hicache_storage_prefetch_policy,
             hicache_write_policy,
+        }
+    }
+}
+
+impl PauseGenerationReqInput {
+    pub fn new(rid: String, mode: PauseMode) -> Self {
+        Self { rid, mode }
+    }
+}
+
+impl ContinueGenerationReqInput {
+    pub fn new(rid: String, torch_empty_cache: bool) -> Self {
+        Self {
+            rid,
+            torch_empty_cache,
         }
     }
 }
@@ -313,6 +374,80 @@ mod tests {
         assert_eq!(arr[4].as_bool(), Some(true));
         assert_eq!(arr[5][0].as_str(), Some("lm_head"));
         assert_eq!(arr[6].as_str(), Some("target"));
+    }
+
+    #[test]
+    fn pause_generation_req_msgpack_shape() {
+        let b = PauseGenerationReqInput::new("7".into(), PauseMode::InPlace)
+            .encode()
+            .unwrap();
+        let val = rmpv::decode::read_value(&mut &b[..]).unwrap();
+        let arr = val.as_array().expect("array");
+        assert_eq!(
+            arr.len(),
+            4,
+            "PauseGenerationReqInput = [tag, rid, http_ipc, mode]"
+        );
+        assert_eq!(arr[0].as_str(), Some("PauseGenerationReqInput"));
+        assert_eq!(arr[1].as_str(), Some("7"));
+        assert!(arr[2].is_nil());
+        assert_eq!(arr[3].as_str(), Some("in_place"));
+    }
+
+    #[test]
+    fn pause_mode_accepts_only_python_literals() {
+        for (text, mode) in [
+            ("abort", PauseMode::Abort),
+            ("in_place", PauseMode::InPlace),
+            ("retract", PauseMode::Retract),
+        ] {
+            assert_eq!(text.parse::<PauseMode>().unwrap(), mode);
+        }
+        for text in ["", "inplace", "Abort"] {
+            assert!(
+                text.parse::<PauseMode>().is_err(),
+                "{text:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn continue_generation_req_msgpack_shape() {
+        let b = ContinueGenerationReqInput::new("7".into(), false)
+            .encode()
+            .unwrap();
+        let val = rmpv::decode::read_value(&mut &b[..]).unwrap();
+        let arr = val.as_array().expect("array");
+        assert_eq!(
+            arr.len(),
+            4,
+            "ContinueGenerationReqInput = [tag, rid, http_ipc, torch_empty_cache]"
+        );
+        assert_eq!(arr[0].as_str(), Some("ContinueGenerationReqInput"));
+        assert_eq!(arr[3].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn only_pause_and_continue_go_unanswered() {
+        let rid = || "7".to_string();
+        assert!(
+            !ControlRequest::PauseGenerationReqInput(PauseGenerationReqInput::new(
+                rid(),
+                PauseMode::Retract
+            ))
+            .scheduler_replies()
+        );
+        assert!(
+            !ControlRequest::ContinueGenerationReqInput(ContinueGenerationReqInput::new(
+                rid(),
+                true
+            ))
+            .scheduler_replies()
+        );
+        assert!(
+            ControlRequest::FlushCacheReqInput(FlushCacheReqInput::new(rid(), None))
+                .scheduler_replies()
+        );
     }
 
     /// The header must be positionally aligned: `input_embeds` (idx 5) /

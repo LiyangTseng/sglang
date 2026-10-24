@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use bytes::Bytes;
+
 use crate::message::detok::DetokMsg;
 use crate::message::ids::Rid;
 use crate::message::io_struct::{AbortReq, ControlRequest};
@@ -167,8 +169,9 @@ impl Intake {
                         continue;
                     }
                     // A tokenize request is answered by the tokenizer pool
-                    // through its own sink, never by a detok shard.
-                    if !matches!(req.kind, RequestKind::Tokenize { .. }) {
+                    // through its own sink, never by a detok shard; neither is
+                    // a control the scheduler never answers.
+                    if answered_by_detok(&req.kind) {
                         if !self.register_detok(&req) {
                             let _ = req
                                 .state
@@ -426,7 +429,11 @@ impl Intake {
     /// Push a bare control request (`[tag, rid, nil]`) onto the to_scheduler channel. The
     /// scheduler dispatches it (e.g. `GetInternalStateReq`) and replies via the
     /// from_scheduler channel as a single `Result`.
+    ///
+    /// A control the scheduler never answers is acknowledged here instead,
+    /// with an empty payload, once it is on the channel.
     fn push_control_to_channel(&self, mut req: Request) {
+        let registered = answered_by_detok(&req.kind);
         let encode = match &req.kind {
             RequestKind::Control(control) => control.encode(),
             _ => Err(Error::Internal(
@@ -436,7 +443,7 @@ impl Intake {
         let header = match encode {
             Ok(b) => b,
             Err(e) => {
-                self.fail(&mut req, e, true); // on the push path: registered
+                self.fail(&mut req, e, registered);
                 return;
             }
         };
@@ -445,7 +452,9 @@ impl Intake {
             header,
             buffers: Vec::new(),
         }) {
-            self.fail(&mut req, Error::QueueFull, true); // registered
+            self.fail(&mut req, Error::QueueFull, registered);
+        } else if !registered {
+            let _ = req.sink.try_send(ResponseItem::Control(Bytes::new())); // client may be gone
         }
     }
 
@@ -518,6 +527,16 @@ impl Intake {
         }
         // On success the scheduler owns the request (response arrives by rid); we
         // drop our `Request` here — the detok shard holds the sink.
+    }
+}
+
+/// Whether a detok shard delivers this request's response, so its sink must
+/// be registered there before the request leaves Rust.
+fn answered_by_detok(kind: &RequestKind) -> bool {
+    match kind {
+        RequestKind::Tokenize { .. } => false,
+        RequestKind::Control(control) => control.scheduler_replies(),
+        RequestKind::Generate(_) | RequestKind::Detokenize { .. } => true,
     }
 }
 

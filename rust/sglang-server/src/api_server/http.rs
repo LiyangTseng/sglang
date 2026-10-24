@@ -6,3 +6,4 @@ mod metrics;
 mod native_api;
 mod openai;
 mod request_headers;
+mod weight_update;

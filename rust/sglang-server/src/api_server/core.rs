@@ -13,8 +13,10 @@ mod frame;
 mod handle;
 mod hicache;
 mod prefetch;
+mod weight_update;
 
 pub(crate) use error::{CoreError, CoreErrorKind};
 pub(crate) use frame::{CoreEvent, CoreOutput, HealthStatus};
 pub(crate) use handle::{CoreCall, CoreConfig, CoreHandle, CoreMetadata, recv_indexed};
 pub(crate) use hicache::HiCacheManager;
+pub(crate) use weight_update::WeightUpdateManager;

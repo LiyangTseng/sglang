@@ -49,6 +49,15 @@ service SglangService {
   // Duplicate native IDs cancel all matching generations. A later reuse of the
   // ID is unaffected. Internal control/detokenization requests are not targeted.
   rpc Abort(AbortRequest) returns (AbortResponse);
+
+  // `/pause_generation`: new generations wait until ContinueGeneration. Mode
+  // "abort" aborts every generation and returns once all have ended; the
+  // other modes return once the scheduler has been sent the pause.
+  // INVALID_ARGUMENT for an unknown mode.
+  rpc PauseGeneration(PauseGenerationRequest) returns (GenerationControlResponse);
+
+  // `/continue_generation`: resume the scheduler, then admit waiting generations.
+  rpc ContinueGeneration(ContinueGenerationRequest) returns (GenerationControlResponse);
 }
 
 message ListModelsRequest {}

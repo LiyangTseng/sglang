@@ -331,11 +331,13 @@ pub fn start(cfg: RuntimeConfig, http_layer: Option<HttpLayer>) -> Result<Runtim
             core.clone(),
             &cfg.server_args,
         ));
+        let weight_update_manager = api_server::core::WeightUpdateManager::new(core.clone());
         let grpc_server = grpc_listener.map(|listener| {
             let service = api_server::grpc::service::GrpcService::new(
                 core.clone(),
                 &cfg.server_args,
                 hicache_manager.clone(),
+                weight_update_manager.clone(),
             );
             (listener, service)
         });
@@ -365,6 +367,7 @@ pub fn start(cfg: RuntimeConfig, http_layer: Option<HttpLayer>) -> Result<Runtim
                         http_layer,
                         shutdown_rx.clone(),
                         hicache_manager,
+                        weight_update_manager,
                     );
                     if let Some((listener, service)) = grpc_server {
                         tokio::join!(

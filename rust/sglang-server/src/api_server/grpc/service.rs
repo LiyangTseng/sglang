@@ -11,8 +11,9 @@ use sglang_api_types::api::v1::sglang_service_server::SglangService;
 use tonic::{Request, Response, Status};
 
 use super::{info, native_api};
-use crate::api_server::core::{CoreHandle, HealthStatus, HiCacheManager};
+use crate::api_server::core::{CoreHandle, HealthStatus, HiCacheManager, WeightUpdateManager};
 use crate::message::config::{PreferredSamplingParams, ServerArgs};
+use crate::message::io_struct::PauseMode;
 use crate::message::request::{GenerationPolicy, into_requests};
 use crate::message::wire::{ClientMaxNewTokens, fill_preferred_sampling};
 use crate::utils::environ;
@@ -42,6 +43,7 @@ pub(crate) struct GrpcService {
     core: CoreHandle,
     config: AdapterConfig,
     hicache_manager: Arc<HiCacheManager>,
+    weight_update_manager: Arc<WeightUpdateManager>,
 }
 
 impl GrpcService {
@@ -49,6 +51,7 @@ impl GrpcService {
         core: CoreHandle,
         server_args: &ServerArgs,
         hicache_manager: Arc<HiCacheManager>,
+        weight_update_manager: Arc<WeightUpdateManager>,
     ) -> Self {
         Self {
             core,
@@ -63,6 +66,7 @@ impl GrpcService {
                 generation_policy: server_args.into(),
             },
             hicache_manager,
+            weight_update_manager,
         }
     }
 
@@ -75,6 +79,7 @@ impl GrpcService {
     ) -> Self {
         Self {
             hicache_manager: Arc::new(HiCacheManager::new(core.clone(), &ServerArgs::default())),
+            weight_update_manager: WeightUpdateManager::new(core.clone()),
             core,
             config: AdapterConfig {
                 preferred_sampling_params,
@@ -211,6 +216,35 @@ impl SglangService for GrpcService {
         let output = self
             .hicache_manager
             .clear()
+            .await
+            .map_err(native_api::status)?;
+        Ok(Response::new(output))
+    }
+
+    async fn pause_generation(
+        &self,
+        request: Request<api::PauseGenerationRequest>,
+    ) -> Result<Response<api::GenerationControlResponse>, Status> {
+        let mode = request
+            .into_inner()
+            .mode
+            .parse::<PauseMode>()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let output = self
+            .weight_update_manager
+            .pause(mode)
+            .await
+            .map_err(native_api::status)?;
+        Ok(Response::new(output))
+    }
+
+    async fn continue_generation(
+        &self,
+        request: Request<api::ContinueGenerationRequest>,
+    ) -> Result<Response<api::GenerationControlResponse>, Status> {
+        let output = self
+            .weight_update_manager
+            .continue_generation(request.into_inner().torch_empty_cache)
             .await
             .map_err(native_api::status)?;
         Ok(Response::new(output))
@@ -912,6 +946,63 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    /// Pause and continue share the HTTP routes' manager: one unanswered
+    /// control each, acknowledged once intake has it.
+    #[tokio::test]
+    async fn pause_and_continue_send_unanswered_controls() {
+        let h = Harness::new(1, false, Duration::from_secs(1));
+        let h = &h;
+        let ack = |tag: &'static str| async move {
+            let TmEvent::Intake { request, admission } = h.intake_rx.recv_async().await.unwrap()
+            else {
+                panic!("expected control intake");
+            };
+            assert!(admission.try_accept());
+            let RequestKind::Control(control) = &request.kind else {
+                panic!("expected control request");
+            };
+            let wire: serde_json::Value =
+                rmp_serde::from_slice(&control.encode().unwrap()).unwrap();
+            assert_eq!(wire[0], tag);
+            request
+                .sink
+                .try_send(ResponseItem::Control(bytes::Bytes::new()))
+                .unwrap();
+        };
+        let pause = h
+            .service
+            .pause_generation(Request::new(api::PauseGenerationRequest {
+                mode: "in_place".into(),
+            }));
+        let (response, ()) = tokio::join!(pause, ack("PauseGenerationReqInput"));
+        assert_eq!(
+            response.unwrap().into_inner().message,
+            "Generation paused successfully."
+        );
+        let resume = h
+            .service
+            .continue_generation(Request::new(api::ContinueGenerationRequest {
+                torch_empty_cache: true,
+            }));
+        let (response, ()) = tokio::join!(resume, ack("ContinueGenerationReqInput"));
+        assert_eq!(response.unwrap().into_inner().status, "ok");
+        assert!(h.abort_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn pause_rejects_an_unknown_mode_before_sending() {
+        let h = Harness::new(1, false, Duration::from_secs(1));
+        let error = h
+            .service
+            .pause_generation(Request::new(api::PauseGenerationRequest {
+                mode: "inplace".into(),
+            }))
+            .await
+            .expect_err("unknown mode");
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert!(h.intake_rx.try_recv().is_err());
     }
 
     // Drive the RPC and a simulated scheduler reply together, checking the request tag.

@@ -298,6 +298,49 @@ pub mod sglang_service_client {
                 .insert(GrpcMethod::new("sglang.api.v1.SglangService", "Abort"));
             self.inner.unary(req, path, codec).await
         }
+        /// `/pause_generation`: new generations wait until ContinueGeneration. Mode
+        /// "abort" aborts every generation and returns once all have ended; the
+        /// other modes return once the scheduler has been sent the pause.
+        /// INVALID_ARGUMENT for an unknown mode.
+        pub async fn pause_generation(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PauseGenerationRequest>,
+        ) -> std::result::Result<tonic::Response<super::GenerationControlResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/sglang.api.v1.SglangService/PauseGeneration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "sglang.api.v1.SglangService",
+                "PauseGeneration",
+            ));
+            self.inner.unary(req, path, codec).await
+        }
+        /// `/continue_generation`: resume the scheduler, then admit waiting generations.
+        pub async fn continue_generation(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ContinueGenerationRequest>,
+        ) -> std::result::Result<tonic::Response<super::GenerationControlResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/sglang.api.v1.SglangService/ContinueGeneration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "sglang.api.v1.SglangService",
+                "ContinueGeneration",
+            ));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -379,6 +422,19 @@ pub mod sglang_service_server {
             &self,
             request: tonic::Request<super::AbortRequest>,
         ) -> std::result::Result<tonic::Response<super::AbortResponse>, tonic::Status>;
+        /// `/pause_generation`: new generations wait until ContinueGeneration. Mode
+        /// "abort" aborts every generation and returns once all have ended; the
+        /// other modes return once the scheduler has been sent the pause.
+        /// INVALID_ARGUMENT for an unknown mode.
+        async fn pause_generation(
+            &self,
+            request: tonic::Request<super::PauseGenerationRequest>,
+        ) -> std::result::Result<tonic::Response<super::GenerationControlResponse>, tonic::Status>;
+        /// `/continue_generation`: resume the scheduler, then admit waiting generations.
+        async fn continue_generation(
+            &self,
+            request: tonic::Request<super::ContinueGenerationRequest>,
+        ) -> std::result::Result<tonic::Response<super::GenerationControlResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct SglangServiceServer<T> {
@@ -889,6 +945,90 @@ pub mod sglang_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = AbortSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/sglang.api.v1.SglangService/PauseGeneration" => {
+                    #[allow(non_camel_case_types)]
+                    struct PauseGenerationSvc<T: SglangService>(pub Arc<T>);
+                    impl<T: SglangService>
+                        tonic::server::UnaryService<super::PauseGenerationRequest>
+                        for PauseGenerationSvc<T>
+                    {
+                        type Response = super::GenerationControlResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::PauseGenerationRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SglangService>::pause_generation(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PauseGenerationSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/sglang.api.v1.SglangService/ContinueGeneration" => {
+                    #[allow(non_camel_case_types)]
+                    struct ContinueGenerationSvc<T: SglangService>(pub Arc<T>);
+                    impl<T: SglangService>
+                        tonic::server::UnaryService<super::ContinueGenerationRequest>
+                        for ContinueGenerationSvc<T>
+                    {
+                        type Response = super::GenerationControlResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ContinueGenerationRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SglangService>::continue_generation(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ContinueGenerationSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

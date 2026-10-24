@@ -28,6 +28,7 @@ use crate::tokenizer_manager::wiring::{AbortSource, RequestAdmission, TmEvent};
 use crate::utils::error::Error;
 use crate::utils::fsm::RequestState;
 
+use super::weight_update::{GenerationGate, GenerationLease};
 use super::{CoreError, CoreEvent, HealthStatus, prefetch};
 use crate::message::info::{InternalState, ModelInfo, ServerInfo};
 
@@ -114,6 +115,7 @@ struct CoreInner {
     mm_processor: OnceLock<Arc<dyn MmProcessor>>,
     metadata: CoreMetadata,
     generations: Generations,
+    gate: GenerationGate,
 }
 
 impl CoreHandle {
@@ -134,6 +136,7 @@ impl CoreHandle {
                 mm_processor: OnceLock::new(),
                 metadata: config.metadata,
                 generations: Generations::default(),
+                gate: GenerationGate::new(),
             }),
         }
     }
@@ -162,10 +165,8 @@ impl CoreHandle {
         &self,
         mut request: GenerateRequest,
     ) -> Result<CoreCall, CoreError> {
-        let mut generation = self
-            .inner
-            .generations
-            .register(request.rid.clone(), self.inner.abort_tx.clone());
+        let (lease, mut generations) = self.admit(std::slice::from_ref(&request.rid)).await;
+        let mut generation = generations.pop().expect("one generation per rid");
         tokio::select! {
             biased;
             _ = generation.cancelled() => return Err(CoreError::Cancelled("request aborted".into())),
@@ -173,17 +174,47 @@ impl CoreHandle {
         }
         self.submit_generation(request, generation)
             .await
-            .map(CoreCall::new)
+            .map(|call| CoreCall::new(call).leased(Arc::new(lease)))
     }
 
     /// Submit core-owned work without exposing it through the public Abort
     /// registry. Drop still owns cancellation through `RuntimeCall`.
     async fn generate_internal(&self, mut request: GenerateRequest) -> Result<CoreCall, CoreError> {
+        let lease = self.inner.gate.lease().await;
         self.prepare_generations(std::slice::from_mut(&mut request))
             .await?;
         self.submit(RequestKind::Generate(Box::new(request)))
             .await
-            .map(CoreCall::new)
+            .map(|call| CoreCall::new(call).leased(Arc::new(lease)))
+    }
+
+    /// Pass the pause gate, then register the generations for public abort.
+    async fn admit(&self, rids: &[Rid]) -> (GenerationLease, Vec<Generation>) {
+        loop {
+            let lease = self.inner.gate.lease().await;
+            if let Some(generations) = self.register_unless_paused(rids) {
+                return (lease, generations);
+            }
+        }
+    }
+
+    /// An abort-mode pause that closes the gate between a lease and this
+    /// registration would miss these generations in its abort-all, so they
+    /// are unregistered and go back to wait at the gate.
+    pub(super) fn register_unless_paused(&self, rids: &[Rid]) -> Option<Vec<Generation>> {
+        let generations: Vec<_> = rids
+            .iter()
+            .map(|rid| {
+                self.inner
+                    .generations
+                    .register(rid.clone(), self.inner.abort_tx.clone())
+            })
+            .collect();
+        (!self.inner.gate.is_paused()).then_some(generations)
+    }
+
+    pub(super) fn gate(&self) -> &GenerationGate {
+        &self.inner.gate
     }
 
     /// Prepare the group before submitting any surviving request. Explicit
@@ -197,14 +228,9 @@ impl CoreHandle {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
-        let mut generations: Vec<_> = requests
-            .iter()
-            .map(|request| {
-                self.inner
-                    .generations
-                    .register(request.rid.clone(), self.inner.abort_tx.clone())
-            })
-            .collect();
+        let rids: Vec<_> = requests.iter().map(|request| request.rid.clone()).collect();
+        let (lease, mut generations) = self.admit(&rids).await;
+        let lease = Arc::new(lease);
         // Fetch concurrently, but stop only the cancelled item's preparation.
         // Per-item cancellation lets try_join_all use wake-driven polling for
         // large batches, without rescanning every receiver on each media wake.
@@ -223,7 +249,7 @@ impl CoreHandle {
         for (request, generation) in requests.into_iter().zip(generations) {
             let rid = request.rid.clone();
             let call = match self.submit_generation(request, generation).await {
-                Ok(call) => CoreCall::new(call),
+                Ok(call) => CoreCall::new(call).leased(lease.clone()),
                 // Cancellation may happen during preparation or while waiting
                 // for intake. Keep this slot without rolling back siblings.
                 Err(CoreError::Cancelled(_)) => {
@@ -372,6 +398,13 @@ impl CoreHandle {
         })
     }
 
+    /// Send a control the scheduler never answers, returning once intake has
+    /// put it on the scheduler channel.
+    pub(super) async fn send_unanswered(&self, request: ControlRequest) -> Result<(), CoreError> {
+        debug_assert!(!request.scheduler_replies());
+        self.control(request).await.map(drop)
+    }
+
     pub(super) async fn control(&self, request: ControlRequest) -> Result<bytes::Bytes, CoreError> {
         let mut call = self.submit(RequestKind::Control(Box::new(request))).await?;
         match call.recv().await {
@@ -468,7 +501,11 @@ impl CoreHandle {
         // The probe is intentionally not drained. Its call stays alive while
         // the heartbeat is observed, then aborts on drop to clean up a probe
         // that a busy scheduler skipped without producing a terminal frame.
-        let _probe = self.generate_internal(probe).await?;
+        // While generation is paused it waits at the gate, and the heartbeat
+        // decides alone, as in Python.
+        let submit = self.generate_internal(probe);
+        tokio::pin!(submit);
+        let mut probe = None;
 
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
@@ -478,7 +515,11 @@ impl CoreHandle {
             if tokio::time::Instant::now() >= deadline {
                 return Ok(HealthStatus::Stalled);
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            let tick = tokio::time::sleep(Duration::from_millis(50));
+            tokio::select! {
+                call = &mut submit, if probe.is_none() => probe = Some(call?),
+                _ = tick => {}
+            }
         }
     }
 
@@ -600,6 +641,8 @@ fn translate_runtime_error(error: Error) -> CoreError {
 pub(crate) struct CoreCall {
     runtime: RuntimeCall,
     events_finished: bool,
+    /// Shared by the items of one batch; released when the last one drops.
+    _lease: Option<Arc<GenerationLease>>,
 }
 
 impl CoreCall {
@@ -607,7 +650,13 @@ impl CoreCall {
         Self {
             runtime,
             events_finished: false,
+            _lease: None,
         }
+    }
+
+    fn leased(mut self, lease: Arc<GenerationLease>) -> Self {
+        self._lease = Some(lease);
+        self
     }
 
     /// Retain a cancelled batch item's ID and position without runtime work.
@@ -836,7 +885,7 @@ impl Generations {
 
 /// Lives from preprocessing through the terminal response. Drop owns both
 /// removal from the public-ID index and cancellation of unfinished work.
-struct Generation {
+pub(super) struct Generation {
     registry: Generations,
     rid: Rid,
     admission: RequestAdmission,

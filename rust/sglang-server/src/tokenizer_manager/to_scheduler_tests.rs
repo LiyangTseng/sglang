@@ -1336,3 +1336,85 @@ fn mm_text_prompt_under_skip_tokenizer_init_is_a_400() {
     assert!(rx.try_recv().is_err(), "no error frame");
     assert!(mm_rx.try_recv().is_ok(), "submitted to the mm pool");
 }
+
+fn control_req(rid: &str, control: ControlRequest) -> (Request, mpsc::Receiver<ResponseItem>) {
+    let (tx, rx) = mpsc::channel(8);
+    let req = Request {
+        rid: rid.into(),
+        state: RequestState::Received,
+        sink: ResponseSink::Local(tx),
+        kind: RequestKind::Control(Box::new(control)),
+    };
+    (req, rx)
+}
+
+/// The scheduler never answers pause or continue, so a registered sink would
+/// wait forever; intake acknowledges the push itself and registers nothing.
+#[test]
+fn unanswered_control_is_acknowledged_on_push_without_registration() {
+    use crate::message::io_struct::{PauseGenerationReqInput, PauseMode};
+    let (mut intake, detok_rx, consumer, _tm_tx, _mm_rx) = make_intake();
+    let (req, mut rx) = control_req(
+        "51",
+        ControlRequest::PauseGenerationReqInput(PauseGenerationReqInput::new(
+            "51".into(),
+            PauseMode::InPlace,
+        )),
+    );
+    intake.drive(req);
+    let pushed = consumer.drain(16);
+    assert_eq!(pushed.len(), 1, "the frame reaches the scheduler channel");
+    let Ok(ResponseItem::Control(ack)) = rx.try_recv() else {
+        panic!("the sink must receive the push acknowledgement");
+    };
+    assert!(ack.is_empty());
+    assert!(detok_rx.try_recv().is_err(), "no detok registration");
+}
+
+/// A control the scheduler answers keeps its detok registration and gets no
+/// early acknowledgement.
+#[test]
+fn answered_control_waits_for_the_scheduler() {
+    use crate::message::io_struct::FlushCacheReqInput;
+    let (mut intake, detok_rx, consumer, _tm_tx, _mm_rx) = make_intake();
+    let (req, mut rx) = control_req(
+        "52",
+        ControlRequest::FlushCacheReqInput(FlushCacheReqInput::new("52".into(), None)),
+    );
+    intake.drive(req);
+    assert_eq!(consumer.drain(16).len(), 1);
+    assert!(matches!(detok_rx.try_recv(), Ok(DetokMsg::Register { .. })));
+    assert!(
+        rx.try_recv().is_err(),
+        "the scheduler's reply is the answer"
+    );
+}
+
+/// A full channel fails an unanswered control without a deregister for a
+/// registration that never happened.
+#[test]
+fn unanswered_control_on_a_full_channel_fails_without_deregister() {
+    use crate::message::io_struct::ContinueGenerationReqInput;
+    let (mut intake, detok_rx, _consumer, _tm_tx, _mm_rx) = make_intake();
+    let mut receivers = Vec::new();
+    // Fill the channel (capacity 16), then push one more.
+    for i in 0..17 {
+        let rid = format!("6{i}");
+        let (req, rx) = control_req(
+            &rid,
+            ControlRequest::ContinueGenerationReqInput(ContinueGenerationReqInput::new(
+                rid.clone(),
+                true,
+            )),
+        );
+        intake.drive(req);
+        receivers.push(rx);
+    }
+    let Ok(ResponseItem::Error(Error::QueueFull)) = receivers[16].try_recv() else {
+        panic!("the overflowing control must fail with QueueFull");
+    };
+    assert!(
+        detok_rx.try_recv().is_err(),
+        "nothing registered or deregistered"
+    );
+}
