@@ -13,6 +13,7 @@ use crate::multi_modality::worker::MediaError;
 use crate::tokenizer_manager::wiring::{AbortSource, RequestAdmission};
 use crate::utils::error::Error;
 
+use super::frontend_state::GenerationLease;
 use super::handle::{CoreHandle, ExpectedResponse, RuntimeCall, translate_runtime_error};
 use crate::api_server::core::{CoreError, CoreEvent, prefetch};
 
@@ -21,8 +22,9 @@ impl CoreHandle {
         &self,
         mut request: GenerateRequest,
     ) -> Result<CoreCall, CoreError> {
-        // Python holds client generates while paused, before tokenizing.
-        self.inner.frontend.wait_unpaused().await;
+        // Python holds client generates while paused, before tokenizing,
+        // then holds the update lock's read side until the response ends.
+        let lease = self.inner.frontend.lease().await;
         let mut generation = self
             .inner
             .generations
@@ -34,7 +36,7 @@ impl CoreHandle {
         }
         self.submit_generation(request, generation)
             .await
-            .map(CoreCall::new)
+            .map(|call| CoreCall::new(call).leased(Arc::new(lease)))
     }
 
     /// Submit core-owned work without exposing it through the public Abort
@@ -61,7 +63,7 @@ impl CoreHandle {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
-        self.inner.frontend.wait_unpaused().await;
+        let lease = Arc::new(self.inner.frontend.lease().await);
         let mut generations: Vec<_> = requests
             .iter()
             .map(|request| {
@@ -88,7 +90,7 @@ impl CoreHandle {
         for (request, generation) in requests.into_iter().zip(generations) {
             let rid = request.rid.clone();
             let call = match self.submit_generation(request, generation).await {
-                Ok(call) => CoreCall::new(call),
+                Ok(call) => CoreCall::new(call).leased(lease.clone()),
                 // Cancellation may happen during preparation or while waiting
                 // for intake. Keep this slot without rolling back siblings.
                 Err(CoreError::Cancelled(_)) => {
@@ -139,6 +141,9 @@ impl CoreHandle {
 pub(crate) struct CoreCall {
     runtime: RuntimeCall,
     events_finished: bool,
+    /// The update-lock lease, shared by the items of one batch; released
+    /// when the last one drops.
+    _lease: Option<Arc<GenerationLease>>,
 }
 
 impl CoreCall {
@@ -146,7 +151,13 @@ impl CoreCall {
         Self {
             runtime,
             events_finished: false,
+            _lease: None,
         }
+    }
+
+    fn leased(mut self, lease: Arc<GenerationLease>) -> Self {
+        self._lease = Some(lease);
+        self
     }
 
     /// Retain a cancelled batch item's ID and position without runtime work.

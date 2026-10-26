@@ -1,13 +1,13 @@
 //! Frontend state a control call changes and the request path reads: the
-//! pause flag, and a cache of the scheduler-owned model facts. One per
-//! listener. A control call lands on one listener and fans out to every
+//! pause flag, the update lock, and a cache of the scheduler-owned model
+//! facts. One per listener. A control call lands on one listener and fans out to every
 //! scheduler; the peer relay (`forward_control_req`) applies the same
 //! transition here on the other listeners, so the effect is deployment-wide.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{OwnedRwLockReadGuard, RwLock, RwLockWriteGuard, watch};
 
 use super::handle::CoreMetadata;
 use crate::message::config::DisaggregationMode;
@@ -43,6 +43,11 @@ impl ModelFacts {
 pub(crate) struct FrontendState {
     /// Python's `is_pause`: generates wait here before admission.
     paused: watch::Sender<bool>,
+    /// Python's `model_update_lock`: each generate holds a read lease from
+    /// admission until its response ends; a weight update takes the write
+    /// side. Tokio's RwLock is fair and write-preferring, like Python's
+    /// `RWLock`: a queued writer holds back new readers.
+    update_lock: Arc<RwLock<()>>,
     /// The last facts read, always available; `stale` says a control call
     /// has run since and the next read should refresh first.
     facts: RwLock<Arc<ModelFacts>>,
@@ -53,12 +58,12 @@ impl FrontendState {
     pub(super) fn new(metadata: &CoreMetadata) -> Self {
         Self {
             paused: watch::Sender::new(false),
+            update_lock: Arc::new(RwLock::new(())),
             facts: RwLock::new(Arc::new(ModelFacts::from_launch(metadata))),
             stale: AtomicBool::new(false),
         }
     }
 
-    #[cfg(test)]
     pub(super) fn is_paused(&self) -> bool {
         *self.paused.borrow()
     }
@@ -73,6 +78,31 @@ impl FrontendState {
         // `wait_for` checks the current value first, so a running listener
         // passes without yielding.
         let _ = rx.wait_for(|paused| !paused).await;
+    }
+
+    /// Wait until generation is not paused, then take a read lease on the
+    /// weights. A pause that lands while this waits for the lock sends it
+    /// back to wait, so no generate is admitted while paused.
+    pub(super) async fn lease(&self) -> GenerationLease {
+        loop {
+            self.wait_unpaused().await;
+            let guard = self.update_lock.clone().read_owned().await;
+            if !self.is_paused() {
+                return GenerationLease { _guard: guard };
+            }
+        }
+    }
+
+    /// Python's writer lock: wait for every lease to be released and hold
+    /// off new ones until the guard drops. `None` while paused, as Python
+    /// skips the lock then: an in-place pause keeps requests (and their
+    /// leases) that would never be released.
+    pub(super) async fn hold_weights_unless_paused(&self) -> Option<RwLockWriteGuard<'_, ()>> {
+        if self.is_paused() {
+            None
+        } else {
+            Some(self.update_lock.write().await)
+        }
     }
 
     /// Mark the cached facts as possibly changed by a control call.
@@ -103,6 +133,12 @@ impl FrontendState {
     }
 }
 
+/// A generate's hold on the current weights, from admission until its
+/// response ends; shared by the items of one batch.
+pub(crate) struct GenerationLease {
+    _guard: OwnedRwLockReadGuard<()>,
+}
+
 /// What the relay does on a peer listener after forwarding a control request
 /// of this tag to the local scheduler, so the listener's own state matches
 /// what the origin listener did.
@@ -111,6 +147,11 @@ pub(crate) enum RelayedEffect {
     None,
     SetPaused(bool),
     Invalidate,
+    /// A weight update: hold this listener's update lock while the local
+    /// scheduler runs it (unless paused, as on the origin), so this
+    /// listener's in-flight generates drain first and new ones wait; then
+    /// invalidate the facts.
+    UpdateWeights,
 }
 
 impl RelayedEffect {
@@ -118,12 +159,12 @@ impl RelayedEffect {
         match tag {
             "PauseGenerationReqInput" => Self::SetPaused(true),
             "ContinueGenerationReqInput" => Self::SetPaused(false),
-            "PdRoleSwitchReqInput"
-            | "UpdateWeightVersionReqInput"
-            | "UpdateWeightFromDiskReqInput"
+            "UpdateWeightFromDiskReqInput"
             | "UpdateWeightsFromDistributedReqInput"
             | "UpdateWeightsFromTensorReqInput"
-            | "UpdateWeightsFromIPCReqInput"
+            | "UpdateWeightsFromIPCReqInput" => Self::UpdateWeights,
+            "PdRoleSwitchReqInput"
+            | "UpdateWeightVersionReqInput"
             | "LoadLoRAAdapterReqInput"
             | "LoadLoRAAdapterFromTensorsReqInput" => Self::Invalidate,
             _ => Self::None,
@@ -195,6 +236,10 @@ mod tests {
         assert_eq!(
             RelayedEffect::for_tag("UpdateWeightVersionReqInput"),
             RelayedEffect::Invalidate
+        );
+        assert_eq!(
+            RelayedEffect::for_tag("UpdateWeightFromDiskReqInput"),
+            RelayedEffect::UpdateWeights
         );
         assert_eq!(
             RelayedEffect::for_tag("FlushCacheReqInput"),

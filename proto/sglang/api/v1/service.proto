@@ -86,6 +86,9 @@ service SglangService {
   rpc InitWeightsSendGroupForRemoteInstance(InitWeightsSendGroupForRemoteInstanceRequest) returns (WeightGroupResponse);
   rpc SendWeightsToRemoteInstance(SendWeightsToRemoteInstanceRequest) returns (WeightGroupResponse);
 
+  // `/update_weights_from_disk`: reload the weights under the update lock.
+  rpc UpdateWeightsFromDisk(UpdateWeightsFromDiskRequest) returns (UpdateWeightsFromDiskResponse);
+
   // `/remote_instance_transfer_engine_info`: proxied from the engine-info
   // bootstrap server.
   rpc GetRemoteInstanceTransferEngineInfo(RemoteInstanceTransferEngineInfoRequest) returns (RemoteInstanceTransferEngineInfoResponse);

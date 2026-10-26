@@ -571,6 +571,26 @@ pub mod sglang_service_client {
             ));
             self.inner.unary(req, path, codec).await
         }
+        /// `/update_weights_from_disk`: reload the weights under the update lock.
+        pub async fn update_weights_from_disk(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateWeightsFromDiskRequest>,
+        ) -> std::result::Result<tonic::Response<super::UpdateWeightsFromDiskResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/sglang.api.v1.SglangService/UpdateWeightsFromDisk",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "sglang.api.v1.SglangService",
+                "UpdateWeightsFromDisk",
+            ));
+            self.inner.unary(req, path, codec).await
+        }
         /// `/remote_instance_transfer_engine_info`: proxied from the engine-info
         /// bootstrap server.
         pub async fn get_remote_instance_transfer_engine_info(
@@ -1321,6 +1341,11 @@ pub mod sglang_service_server {
             &self,
             request: tonic::Request<super::SendWeightsToRemoteInstanceRequest>,
         ) -> std::result::Result<tonic::Response<super::WeightGroupResponse>, tonic::Status>;
+        /// `/update_weights_from_disk`: reload the weights under the update lock.
+        async fn update_weights_from_disk(
+            &self,
+            request: tonic::Request<super::UpdateWeightsFromDiskRequest>,
+        ) -> std::result::Result<tonic::Response<super::UpdateWeightsFromDiskResponse>, tonic::Status>;
         /// `/remote_instance_transfer_engine_info`: proxied from the engine-info
         /// bootstrap server.
         async fn get_remote_instance_transfer_engine_info(
@@ -2609,6 +2634,49 @@ pub mod sglang_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = SendWeightsToRemoteInstanceSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/sglang.api.v1.SglangService/UpdateWeightsFromDisk" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateWeightsFromDiskSvc<T: SglangService>(pub Arc<T>);
+                    impl<T: SglangService>
+                        tonic::server::UnaryService<super::UpdateWeightsFromDiskRequest>
+                        for UpdateWeightsFromDiskSvc<T>
+                    {
+                        type Response = super::UpdateWeightsFromDiskResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdateWeightsFromDiskRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SglangService>::update_weights_from_disk(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateWeightsFromDiskSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

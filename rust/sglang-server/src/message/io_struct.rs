@@ -233,6 +233,22 @@ control_messages! {
         abort_all_requests: bool,
     }
 
+    /// `/update_weights_from_disk`: Python's `UpdateWeightFromDiskReqInput`.
+    UpdateWeightFromDiskReqInput {
+        model_path: String,
+        load_format: Option<String>,
+        abort_all_requests: bool,
+        weight_version: Option<String>,
+        is_async: bool,
+        torch_empty_cache: bool,
+        keep_pause: bool,
+        recapture_cuda_graph: bool,
+        token_step: i64,
+        flush_cache: bool,
+        /// A msgpack map: Python declares it `Optional[Dict[str, Any]]`.
+        manifest: Option<serde_json::Map<String, serde_json::Value>>,
+    }
+
     /// Clear the HiCache storage backend.
     ClearHiCacheReqInput {}
 
@@ -468,6 +484,42 @@ impl UpdateWeightVersionReqInput {
     }
 }
 
+/// The `/update_weights_from_disk` fields after Python's request validation:
+/// `load_format` resolved, `manifest` parsed.
+#[derive(Debug, Clone)]
+pub struct DiskWeightUpdate {
+    pub model_path: String,
+    pub load_format: Option<String>,
+    pub abort_all_requests: bool,
+    pub weight_version: Option<String>,
+    pub is_async: bool,
+    pub torch_empty_cache: bool,
+    pub keep_pause: bool,
+    pub recapture_cuda_graph: bool,
+    pub token_step: i64,
+    pub flush_cache: bool,
+    pub manifest: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl UpdateWeightFromDiskReqInput {
+    pub fn new(rid: String, update: DiskWeightUpdate) -> Self {
+        Self {
+            rid,
+            model_path: update.model_path,
+            load_format: update.load_format,
+            abort_all_requests: update.abort_all_requests,
+            weight_version: update.weight_version,
+            is_async: update.is_async,
+            torch_empty_cache: update.torch_empty_cache,
+            keep_pause: update.keep_pause,
+            recapture_cuda_graph: update.recapture_cuda_graph,
+            token_step: update.token_step,
+            flush_cache: update.flush_cache,
+            manifest: update.manifest,
+        }
+    }
+}
+
 /// `ExpertDistributionReqType` on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpertDistributionAction {
@@ -641,6 +693,44 @@ impl AbortReq {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn update_weight_from_disk_req_msgpack_shape() {
+        let manifest = serde_json::json!({"layers": [{"name": "w", "shape": [2, 3]}]});
+        let b = UpdateWeightFromDiskReqInput::new(
+            "7".into(),
+            DiskWeightUpdate {
+                model_path: "/ckpt/step-10".into(),
+                load_format: Some("auto".into()),
+                abort_all_requests: true,
+                weight_version: Some("v2".into()),
+                is_async: true,
+                torch_empty_cache: true,
+                keep_pause: true,
+                recapture_cuda_graph: true,
+                token_step: 10,
+                flush_cache: false,
+                manifest: manifest.as_object().cloned(),
+            },
+        )
+        .encode()
+        .unwrap();
+        let val = rmpv::decode::read_value(&mut &b[..]).unwrap();
+        let arr = val.as_array().expect("array");
+        assert_eq!(arr.len(), 14, "[tag, rid, http_ipc, 11 fields]");
+        assert_eq!(arr[0].as_str(), Some("UpdateWeightFromDiskReqInput"));
+        assert_eq!(arr[3].as_str(), Some("/ckpt/step-10"));
+        assert_eq!(arr[4].as_str(), Some("auto"));
+        assert_eq!(arr[5].as_bool(), Some(true), "abort_all_requests");
+        assert_eq!(arr[6].as_str(), Some("v2"), "weight_version");
+        for (i, field) in arr.iter().enumerate().take(11).skip(7) {
+            assert_eq!(field.as_bool(), Some(true), "bool field {i}");
+        }
+        assert_eq!(arr[11].as_i64(), Some(10), "token_step");
+        assert_eq!(arr[12].as_bool(), Some(false), "flush_cache");
+        // Python decodes `Dict[str, Any]`, so JSON text would fail.
+        assert!(arr[13].as_map().is_some(), "manifest must be a map");
+    }
+
     use super::*;
 
     #[test]

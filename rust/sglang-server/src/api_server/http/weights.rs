@@ -1,4 +1,4 @@
-//! Weight-management control routes: the state-free subset, backed by the
+//! Weight-management control routes, backed by the
 //! typed operations in `handlers::weights`.
 
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use sglang_api_types::api::v1 as api;
 use super::app::AppState;
 use super::native_api::native_error;
 use crate::api_server::core::CoreError;
-use crate::api_server::handlers::WeightGroupOutcome;
+use crate::api_server::handlers::{DiskUpdateOutcome, WeightGroupOutcome, disk_weight_update};
 use crate::message::io_struct::{WeightsSendGroup, WeightsUpdateGroup};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
@@ -44,6 +44,7 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
             "/send_weights_to_remote_instance",
             post(send_weights_to_remote_instance),
         )
+        .route("/update_weights_from_disk", post(update_weights_from_disk))
         .route(
             "/remote_instance_transfer_engine_info",
             get(remote_instance_transfer_engine_info),
@@ -108,6 +109,41 @@ fn python_error(status: StatusCode, message: &str) -> Response {
 fn body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, String> {
     body.map(|Json(body)| body)
         .map_err(|rejection| rejection.body_text())
+}
+
+/// `POST /update_weights_from_disk` — Python's `{success, message,
+/// num_paused_requests}`, 200 on success and 400 otherwise.
+async fn update_weights_from_disk(
+    State(state): State<Arc<AppState>>,
+    body: Result<Json<api::UpdateWeightsFromDiskRequest>, JsonRejection>,
+) -> Response {
+    let update = match self::body(body)
+        .map_err(CoreError::InvalidArgument)
+        .and_then(disk_weight_update)
+    {
+        Ok(update) => update,
+        Err(error) => return native_error(StatusCode::BAD_REQUEST, &error.to_string(), false),
+    };
+    match state.core.update_weights_from_disk(update).await {
+        Ok(DiskUpdateOutcome {
+            success,
+            message,
+            num_paused_requests,
+        }) => (
+            if success {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            Json(api::UpdateWeightsFromDiskResponse {
+                success,
+                message,
+                num_paused_requests,
+            }),
+        )
+            .into_response(),
+        Err(error) => native_error(error.http_status(), &error.to_string(), false),
+    }
 }
 
 /// `POST|PUT /get_weights_by_name` — Python answers the bare parameter on a

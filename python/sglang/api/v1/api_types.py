@@ -3551,6 +3551,48 @@ class RemoteInstanceTransferEngineInfoResponse(msgspec.Struct, kw_only=True, fro
         return encode_RemoteInstanceTransferEngineInfoResponse(self)
 
 
+class UpdateWeightsFromDiskRequest(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.UpdateWeightsFromDiskRequest: JSON object (unknown keys ignored)."""
+
+    model_path: str = ""
+    load_format: Optional[str] = None
+    abort_all_requests: bool = False
+    weight_version: Optional[str] = None
+    is_async: bool = False
+    torch_empty_cache: bool = False
+    keep_pause: bool = False
+    recapture_cuda_graph: bool = False
+    token_step: int = 0
+    flush_cache: Optional[bool] = True
+    manifest: Optional[Any] = None
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "UpdateWeightsFromDiskRequest":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_UpdateWeightsFromDiskRequest(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_UpdateWeightsFromDiskRequest(self)
+
+
+class UpdateWeightsFromDiskResponse(msgspec.Struct, kw_only=True, frozen=True):
+    """sglang.api.v1.UpdateWeightsFromDiskResponse: JSON object (unknown keys ignored)."""
+
+    success: bool = False
+    message: str = ""
+    num_paused_requests: int = 0
+
+    @classmethod
+    def from_json_value(cls, value: Any) -> "UpdateWeightsFromDiskResponse":
+        """Decode a parsed JSON value; raises JsonContractError on a contract violation."""
+        return decode_UpdateWeightsFromDiskResponse(value)
+
+    def to_json_value(self) -> Dict[str, Any]:
+        """Encode to a JSON-ready value (json.dumps-compatible)."""
+        return encode_UpdateWeightsFromDiskResponse(self)
+
+
 class ListModelsRequest(msgspec.Struct, kw_only=True, frozen=True):
     """sglang.api.v1.ListModelsRequest: JSON object (unknown keys ignored)."""
 
@@ -10625,6 +10667,76 @@ def encode_RemoteInstanceTransferEngineInfoResponse(v: RemoteInstanceTransferEng
     d: Dict[str, Any] = {}
     if v.info is not None:
         d["info"] = v.info
+    return d
+
+
+def decode_UpdateWeightsFromDiskRequest(value: Any) -> UpdateWeightsFromDiskRequest:
+    m = _expect_map(value, expected="struct UpdateWeightsFromDiskRequest")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "model_path":
+            kw["model_path"] = _expect_str(x, expected="a string")
+        elif key == "load_format":
+            kw["load_format"] = None if x is None else _expect_str(x, expected="a string")
+        elif key == "abort_all_requests":
+            kw["abort_all_requests"] = _expect_bool(x, expected="a boolean")
+        elif key == "weight_version":
+            kw["weight_version"] = None if x is None else _expect_str(x, expected="a string")
+        elif key == "is_async":
+            kw["is_async"] = _expect_bool(x, expected="a boolean")
+        elif key == "torch_empty_cache":
+            kw["torch_empty_cache"] = _expect_bool(x, expected="a boolean")
+        elif key == "keep_pause":
+            kw["keep_pause"] = _expect_bool(x, expected="a boolean")
+        elif key == "recapture_cuda_graph":
+            kw["recapture_cuda_graph"] = _expect_bool(x, expected="a boolean")
+        elif key == "token_step":
+            kw["token_step"] = _expect_int(x, expected="i64")
+        elif key == "flush_cache":
+            kw["flush_cache"] = True if x is None else _expect_bool(x, expected="a boolean")
+        elif key == "manifest":
+            kw["manifest"] = x
+    return UpdateWeightsFromDiskRequest(**kw)
+
+
+def encode_UpdateWeightsFromDiskRequest(v: UpdateWeightsFromDiskRequest) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    d["model_path"] = v.model_path
+    if v.load_format is not None:
+        d["load_format"] = v.load_format
+    d["abort_all_requests"] = v.abort_all_requests
+    if v.weight_version is not None:
+        d["weight_version"] = v.weight_version
+    d["is_async"] = v.is_async
+    d["torch_empty_cache"] = v.torch_empty_cache
+    d["keep_pause"] = v.keep_pause
+    d["recapture_cuda_graph"] = v.recapture_cuda_graph
+    d["token_step"] = v.token_step
+    if v.flush_cache is not None:
+        d["flush_cache"] = v.flush_cache
+    if v.manifest is not None:
+        d["manifest"] = v.manifest
+    return d
+
+
+def decode_UpdateWeightsFromDiskResponse(value: Any) -> UpdateWeightsFromDiskResponse:
+    m = _expect_map(value, expected="struct UpdateWeightsFromDiskResponse")
+    kw: Dict[str, Any] = {}
+    for key, x in m.items():
+        if key == "success":
+            kw["success"] = _expect_bool(x, expected="a boolean")
+        elif key == "message":
+            kw["message"] = _expect_str(x, expected="a string")
+        elif key == "num_paused_requests":
+            kw["num_paused_requests"] = _expect_int(x, expected="i64")
+    return UpdateWeightsFromDiskResponse(**kw)
+
+
+def encode_UpdateWeightsFromDiskResponse(v: UpdateWeightsFromDiskResponse) -> Dict[str, Any]:
+    d: Dict[str, Any] = {}
+    d["success"] = v.success
+    d["message"] = v.message
+    d["num_paused_requests"] = v.num_paused_requests
     return d
 
 

@@ -404,14 +404,21 @@ impl CoreHandle {
         let forwarded = ForwardedControlReq::parse(header)
             .map_err(|error| CoreError::InvalidArgument(error.to_string()))?;
         let effect = RelayedEffect::for_tag(&forwarded.tag);
+        let writer = match effect {
+            RelayedEffect::UpdateWeights => self.inner.frontend.hold_weights_unless_paused().await,
+            _ => None,
+        };
         let reply = self
             .submit_control_req(ControlRequest::Forwarded(forwarded))
             .await;
+        drop(writer);
         match effect {
             RelayedEffect::None => {}
             // Set regardless of the reply, as the origin did before fanning out.
             RelayedEffect::SetPaused(paused) => self.inner.frontend.set_paused(paused),
-            RelayedEffect::Invalidate => self.inner.frontend.invalidate(),
+            RelayedEffect::Invalidate | RelayedEffect::UpdateWeights => {
+                self.inner.frontend.invalidate()
+            }
         }
         reply
     }

@@ -76,6 +76,9 @@ fn fixtures_decode_to_their_canonical_bytes() {
             "GetWeightsByNameRequest" => {
                 check::<api::GetWeightsByNameRequest>(&name, input, canonical)
             }
+            "UpdateWeightsFromDiskRequest" => {
+                check::<api::UpdateWeightsFromDiskRequest>(&name, input, canonical)
+            }
             "InitWeightsUpdateGroupRequest" => {
                 check::<api::InitWeightsUpdateGroupRequest>(&name, input, canonical)
             }

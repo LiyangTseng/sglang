@@ -631,6 +631,12 @@
       "canonical": "{\"master_address\":\"10.0.0.1\",\"master_port\":29500,\"rank_offset\":1,\"world_size\":9,\"group_name\":\"weight_update_group\",\"backend\":\"nccl\"}"
     },
     {
+      "type": "UpdateWeightsFromDiskRequest",
+      "name": "flush_cache defaults to true, null included; manifest stays an object",
+      "input": {"model_path": "/ckpt/step-10", "flush_cache": null, "manifest": {"layers": [{"name": "w"}]}},
+      "canonical": "{\"model_path\":\"/ckpt/step-10\",\"abort_all_requests\":false,\"is_async\":false,\"torch_empty_cache\":false,\"keep_pause\":false,\"recapture_cuda_graph\":false,\"token_step\":0,\"flush_cache\":true,\"manifest\":{\"layers\":[{\"name\":\"w\"}]}}"
+    },
+    {
       "type": "SendWeightsToRemoteInstanceRequest",
       "name": "an explicit group name is kept",
       "input": {"master_address": "10.0.0.2", "ports": "9000,9001", "group_name": "g"},

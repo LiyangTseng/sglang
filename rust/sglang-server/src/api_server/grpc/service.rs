@@ -370,6 +370,25 @@ impl SglangService for GrpcService {
         }))
     }
 
+    async fn update_weights_from_disk(
+        &self,
+        request: Request<api::UpdateWeightsFromDiskRequest>,
+    ) -> Result<Response<api::UpdateWeightsFromDiskResponse>, Status> {
+        let update = crate::api_server::handlers::disk_weight_update(request.into_inner())
+            .map_err(native_api::status)?;
+        let outcome = self
+            .core
+            .update_weights_from_disk(update)
+            .await
+            .map_err(native_api::status)?;
+        // A failure a scheduler reports is in the body, as in HTTP.
+        Ok(Response::new(api::UpdateWeightsFromDiskResponse {
+            success: outcome.success,
+            message: outcome.message,
+            num_paused_requests: outcome.num_paused_requests,
+        }))
+    }
+
     async fn init_weights_update_group(
         &self,
         request: Request<api::InitWeightsUpdateGroupRequest>,

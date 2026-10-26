@@ -3422,6 +3422,47 @@ pub struct RemoteInstanceTransferEngineInfoResponse {
     #[prost(string, optional, tag = "1")]
     pub info: ::core::option::Option<::prost::alloc::string::String>,
 }
+/// `/update_weights_from_disk`: reload the weights from `model_path` on every
+/// DP rank, holding the update lock unless generation is paused. Field names
+/// and defaults follow Python's `UpdateWeightFromDiskReqInput`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateWeightsFromDiskRequest {
+    #[prost(string, tag = "1")]
+    pub model_path: ::prost::alloc::string::String,
+    /// Unset keeps the load format in effect.
+    #[prost(string, optional, tag = "2")]
+    pub load_format: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag = "3")]
+    pub abort_all_requests: bool,
+    #[prost(string, optional, tag = "4")]
+    pub weight_version: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag = "5")]
+    pub is_async: bool,
+    #[prost(bool, tag = "6")]
+    pub torch_empty_cache: bool,
+    #[prost(bool, tag = "7")]
+    pub keep_pause: bool,
+    #[prost(bool, tag = "8")]
+    pub recapture_cuda_graph: bool,
+    #[prost(int64, tag = "9")]
+    pub token_step: i64,
+    #[prost(bool, optional, tag = "10")]
+    pub flush_cache: ::core::option::Option<bool>,
+    /// Tensor metadata as a JSON object, passed through to the scheduler.
+    #[prost(string, optional, tag = "11")]
+    pub manifest: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// Python's `{success, message, num_paused_requests}`; HTTP 200 on success,
+/// 400 otherwise.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateWeightsFromDiskResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(int64, tag = "3")]
+    pub num_paused_requests: i64,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListModelsRequest {}
 #[derive(Clone, PartialEq, ::prost::Message)]

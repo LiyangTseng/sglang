@@ -23,4 +23,4 @@ pub(crate) use generate::{CoreCall, recv_indexed};
 pub(crate) use handle::{CoreConfig, CoreHandle, CoreMetadata};
 pub(crate) use hicache::HiCacheManager;
 pub(crate) use parsers::{ToolSpec, parse_function_call, separate_reasoning};
-pub(crate) use weights::WeightGroupOutcome;
+pub(crate) use weights::{DiskUpdateOutcome, WeightGroupOutcome, disk_weight_update};

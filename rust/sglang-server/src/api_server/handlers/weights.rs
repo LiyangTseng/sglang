@@ -1,12 +1,14 @@
-//! Weight management, the state-free subset: process-group setup,
-//! remote-instance sends, and parameter reads. The weight updates themselves
-//! wait on the frontend holding the update lock on every listener.
+//! Weight management: process-group setup, remote-instance sends, parameter
+//! reads, and the weight updates, which hold the frontend's update lock.
+
+use sglang_api_types::api::v1 as api;
 
 use crate::message::ids::Rid;
 use crate::message::io_struct::{
-    ControlRequest, DestroyWeightsUpdateGroupReqInput, GetWeightsByNameReqInput,
+    ControlRequest, DestroyWeightsUpdateGroupReqInput, DiskWeightUpdate, GetWeightsByNameReqInput,
     InitWeightsSendGroupForRemoteInstanceReqInput, InitWeightsUpdateGroupReqInput,
-    SendWeightsToRemoteInstanceReqInput, WeightsSendGroup, WeightsUpdateGroup,
+    SendWeightsToRemoteInstanceReqInput, UpdateWeightFromDiskReqInput, WeightsSendGroup,
+    WeightsUpdateGroup,
 };
 
 use super::handle::CoreHandle;
@@ -98,6 +100,73 @@ impl CoreHandle {
             )
         })
         .await
+    }
+
+    /// Python's `update_weights_from_disk`: reload on every DP rank, holding
+    /// the update lock (unless paused) so this listener's in-flight generates
+    /// finish on the old weights and new ones wait for the new. Each peer
+    /// listener holds its own lock through the relay. A failure a scheduler
+    /// reports is `success: false`, not an error. Detached: a client that
+    /// goes away does not leave the lock or the schedulers half-updated.
+    pub(crate) async fn update_weights_from_disk(
+        &self,
+        update: DiskWeightUpdate,
+    ) -> Result<DiskUpdateOutcome, CoreError> {
+        if update.model_path.is_empty() {
+            return Err(CoreError::InvalidArgument(
+                "missing field `model_path`".into(),
+            ));
+        }
+        let this = self.clone();
+        tokio::spawn(async move { this.update_weights_from_disk_detached(update).await })
+            .await
+            .map_err(|error| CoreError::Internal(format!("weight update task failed: {error}")))?
+    }
+
+    async fn update_weights_from_disk_detached(
+        &self,
+        mut update: DiskWeightUpdate,
+    ) -> Result<DiskUpdateOutcome, CoreError> {
+        if update.load_format.is_none() {
+            update.load_format = self.model_facts().await.load_format.clone();
+        }
+        if update.abort_all_requests {
+            self.abort(None);
+        }
+        let outcomes = {
+            let _writer = self.inner.frontend.hold_weights_unless_paused().await;
+            self.control(&|| {
+                ControlRequest::UpdateWeightFromDiskReqInput(UpdateWeightFromDiskReqInput::new(
+                    Rid::new().to_string(),
+                    update.clone(),
+                ))
+            })
+            .await
+            .decode::<DiskUpdateOutcome>("update-weights-from-disk")
+        };
+        // Any rank may have reloaded, even when another failed.
+        self.inner.frontend.invalidate();
+        let outcomes = outcomes?;
+        let (success, mut message) = fanout::merge_status(
+            outcomes
+                .iter()
+                .map(|outcome| (outcome.success, outcome.message.as_str())),
+        );
+        // TODO: Python's TokenizerManager also moves `model_path` and
+        // `served_model_name` to `update.model_path` here, and clears the MM
+        // preprocess cache when `flush_cache` is set; the scheduler-owned
+        // facts do not carry the new path yet.
+        if success && let Some(version) = &update.weight_version {
+            message.push_str(&format!(" Weight version updated to {version}."));
+        }
+        Ok(DiskUpdateOutcome {
+            success,
+            message,
+            num_paused_requests: outcomes
+                .iter()
+                .map(|outcome| outcome.num_paused_requests)
+                .sum(),
+        })
     }
 
     /// The group operations Python restricts to one DP rank (its
@@ -199,6 +268,50 @@ impl CoreHandle {
 struct WeightsByNameOutput {
     #[serde(default)]
     parameter: Option<serde_json::Value>,
+}
+
+/// An `/update_weights_from_disk` body as Python validates it: `model_path`
+/// required, `manifest` a JSON object (or null).
+pub(crate) fn disk_weight_update(
+    request: api::UpdateWeightsFromDiskRequest,
+) -> Result<DiskWeightUpdate, CoreError> {
+    if request.model_path.is_empty() {
+        return Err(CoreError::InvalidArgument(
+            "missing field `model_path`".into(),
+        ));
+    }
+    let manifest = match request.manifest.as_deref().map(serde_json::from_str) {
+        None | Some(Ok(serde_json::Value::Null)) => None,
+        Some(Ok(serde_json::Value::Object(manifest))) => Some(manifest),
+        Some(_) => {
+            return Err(CoreError::InvalidArgument(
+                "`manifest` must be a JSON object".into(),
+            ));
+        }
+    };
+    Ok(DiskWeightUpdate {
+        model_path: request.model_path,
+        load_format: request.load_format,
+        abort_all_requests: request.abort_all_requests,
+        weight_version: request.weight_version,
+        is_async: request.is_async,
+        torch_empty_cache: request.torch_empty_cache,
+        keep_pause: request.keep_pause,
+        recapture_cuda_graph: request.recapture_cuda_graph,
+        token_step: request.token_step,
+        flush_cache: request.flush_cache.unwrap_or(true),
+        manifest,
+    })
+}
+
+/// The scheduler's `UpdateWeightFromDiskReqOutput`, merged across ranks.
+#[derive(Debug, serde::Deserialize, PartialEq)]
+pub(crate) struct DiskUpdateOutcome {
+    pub(crate) success: bool,
+    #[serde(default)]
+    pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) num_paused_requests: i64,
 }
 
 /// The `{success, message}` output every group operation returns.
@@ -411,5 +524,176 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind(), CoreErrorKind::InvalidArgument);
         assert!(intake_rx.try_recv().is_err(), "refused before any rank");
+    }
+
+    fn disk_update(model_path: &str) -> DiskWeightUpdate {
+        disk_weight_update(api::UpdateWeightsFromDiskRequest {
+            model_path: model_path.into(),
+            // Set, so the update does not refresh the facts first.
+            load_format: Some("auto".into()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn generate_request() -> crate::message::request::GenerateRequest {
+        crate::message::request::GenerateRequest {
+            rid: Rid::new(),
+            input_ids: Some(vec![1]),
+            ..Default::default()
+        }
+    }
+
+    fn disk_output(success: bool, message: &str) -> Bytes {
+        Bytes::from(
+            rmp_serde::to_vec_named(&serde_json::json!({
+                "success": success,
+                "message": message,
+                "num_paused_requests": 0,
+            }))
+            .unwrap(),
+        )
+    }
+
+    fn control_tag(request: &crate::message::request::Request) -> String {
+        let RequestKind::Control(control) = &request.kind else {
+            panic!("expected a control request");
+        };
+        let rmpv::Value::Array(items) =
+            rmpv::decode::read_value(&mut &control.encode().unwrap()[..]).unwrap()
+        else {
+            panic!("positional wire");
+        };
+        items[0].as_str().unwrap().to_owned()
+    }
+
+    async fn settle() {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+
+    /// Python's writer lock: the update reaches the scheduler only after the
+    /// in-flight generate's response ends, and a generate arriving while the
+    /// update waits is held back until the update is done.
+    #[tokio::test]
+    async fn disk_update_drains_in_flight_generates_and_holds_new_ones() {
+        let harness = Harness::unbounded(8);
+        let in_flight = harness.handle.generate(generate_request()).await.unwrap();
+        let _ = accept_intake(harness.intake_rx.recv_async().await.unwrap());
+
+        let handle = harness.handle.clone();
+        let update = tokio::spawn(async move {
+            handle
+                .update_weights_from_disk(DiskWeightUpdate {
+                    weight_version: Some("v2".into()),
+                    ..disk_update("/ckpt/step-10")
+                })
+                .await
+        });
+        settle().await;
+        assert!(harness.intake_rx.try_recv().is_err(), "waits for the lease");
+
+        let handle = harness.handle.clone();
+        let late = tokio::spawn(async move { handle.generate(generate_request()).await });
+        settle().await;
+        assert!(
+            harness.intake_rx.try_recv().is_err(),
+            "a queued writer holds back new generates"
+        );
+
+        drop(in_flight);
+        let request = accept_intake(harness.intake_rx.recv_async().await.unwrap());
+        assert_eq!(control_tag(&request), "UpdateWeightFromDiskReqInput");
+        settle().await;
+        assert!(
+            harness.intake_rx.try_recv().is_err(),
+            "no generate while the scheduler updates"
+        );
+        request
+            .sink
+            .try_send(ResponseItem::Control(disk_output(true, "Succeeded.")))
+            .unwrap();
+        let outcome = update.await.unwrap().unwrap();
+        assert!(outcome.success);
+        assert_eq!(outcome.message, "Succeeded. Weight version updated to v2.");
+        assert!(
+            harness.handle.inner.frontend.is_stale(),
+            "facts refresh next read"
+        );
+
+        let released = accept_intake(harness.intake_rx.recv_async().await.unwrap());
+        assert!(matches!(released.kind, RequestKind::Generate(_)));
+        drop(late);
+    }
+
+    /// While paused, the update skips the lock, as Python does: an in-place
+    /// pause keeps requests whose leases would never be released.
+    #[tokio::test]
+    async fn disk_update_skips_the_lock_while_paused() {
+        let harness = Harness::unbounded(8);
+        let _in_flight = harness.handle.generate(generate_request()).await.unwrap();
+        let _ = accept_intake(harness.intake_rx.recv_async().await.unwrap());
+        harness.handle.inner.frontend.set_paused(true);
+
+        let handle = harness.handle.clone();
+        let (outcome, ()) =
+            tokio::join!(handle.update_weights_from_disk(disk_update("m")), async {
+                let request = accept_intake(harness.intake_rx.recv_async().await.unwrap());
+                request
+                    .sink
+                    .try_send(ResponseItem::Control(disk_output(false, "bad path")))
+                    .unwrap();
+            });
+        let outcome = outcome.unwrap();
+        assert!(!outcome.success, "a scheduler failure is in the body");
+        assert_eq!(outcome.message, "bad path");
+    }
+
+    /// A peer listener serving a relayed update holds its own lock, so its
+    /// generates drain before its scheduler reloads.
+    #[tokio::test]
+    async fn relayed_disk_update_holds_this_listeners_lock() {
+        let harness = Harness::unbounded(8);
+        let in_flight = harness.handle.generate(generate_request()).await.unwrap();
+        let _ = accept_intake(harness.intake_rx.recv_async().await.unwrap());
+
+        let header = ControlRequest::UpdateWeightFromDiskReqInput(
+            UpdateWeightFromDiskReqInput::new("peer-rid".into(), disk_update("m")),
+        )
+        .encode()
+        .unwrap();
+        let handle = harness.handle.clone();
+        let relay = tokio::spawn(async move { handle.forward_control_req(header).await });
+        settle().await;
+        assert!(harness.intake_rx.try_recv().is_err(), "waits for the lease");
+
+        drop(in_flight);
+        let request = accept_intake(harness.intake_rx.recv_async().await.unwrap());
+        request
+            .sink
+            .try_send(ResponseItem::Control(disk_output(true, "")))
+            .unwrap();
+        relay.await.unwrap().unwrap();
+        assert!(harness.handle.inner.frontend.is_stale());
+    }
+
+    #[test]
+    fn disk_update_body_is_validated_as_python_does() {
+        let error = disk_weight_update(api::UpdateWeightsFromDiskRequest::default()).unwrap_err();
+        assert_eq!(error.kind(), CoreErrorKind::InvalidArgument);
+        let error = disk_weight_update(api::UpdateWeightsFromDiskRequest {
+            model_path: "m".into(),
+            manifest: Some("[1]".into()),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), CoreErrorKind::InvalidArgument);
+        let update = disk_weight_update(api::UpdateWeightsFromDiskRequest {
+            model_path: "m".into(),
+            manifest: Some(r#"{"a": 1}"#.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(update.flush_cache, "Python's default");
+        assert_eq!(update.manifest.unwrap()["a"], 1);
     }
 }

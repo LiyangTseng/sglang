@@ -1,7 +1,6 @@
-// Weight-management control APIs shared by HTTP JSON and gRPC: the
-// state-free subset (group setup, remote-instance send, parameter read).
-// The weight updates themselves follow once the frontend holds the update
-// lock on every listener.
+// Weight-management control APIs shared by HTTP JSON and gRPC: process-group
+// setup, remote-instance sends, parameter reads, and the weight updates that
+// hold the frontend's update lock.
 syntax = "proto3";
 
 package sglang.api.v1;
@@ -96,4 +95,34 @@ message RemoteInstanceTransferEngineInfoRequest {
 // "remote_instance_transfer_engine_info": [...]}`, passed through as JSON.
 message RemoteInstanceTransferEngineInfoResponse {
   optional string info = 1 [(sglang.json.v1.field_json).raw_json = true];
+}
+
+// `/update_weights_from_disk`: reload the weights from `model_path` on every
+// DP rank, holding the update lock unless generation is paused. Field names
+// and defaults follow Python's `UpdateWeightFromDiskReqInput`.
+message UpdateWeightsFromDiskRequest {
+  string model_path = 1;
+  // Unset keeps the load format in effect.
+  optional string load_format = 2;
+  bool abort_all_requests = 3;
+  optional string weight_version = 4;
+  bool is_async = 5;
+  bool torch_empty_cache = 6;
+  bool keep_pause = 7;
+  bool recapture_cuda_graph = 8;
+  int64 token_step = 9;
+  optional bool flush_cache = 10 [
+    (sglang.json.v1.field_json).null_policy = NULL_POLICY_RESETS_DEFAULT,
+    (sglang.json.v1.field_json).default_bool = true
+  ];
+  // Tensor metadata as a JSON object, passed through to the scheduler.
+  optional string manifest = 11 [(sglang.json.v1.field_json).raw_json = true];
+}
+
+// Python's `{success, message, num_paused_requests}`; HTTP 200 on success,
+// 400 otherwise.
+message UpdateWeightsFromDiskResponse {
+  bool success = 1;
+  string message = 2;
+  int64 num_paused_requests = 3;
 }

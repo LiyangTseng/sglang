@@ -217,6 +217,12 @@ impl SglangService for Mock {
     ) -> Result<Response<api::GetWeightsByNameResponse>, Status> {
         Err(Status::unimplemented("get_weights_by_name"))
     }
+    async fn update_weights_from_disk(
+        &self,
+        _: Request<api::UpdateWeightsFromDiskRequest>,
+    ) -> Result<Response<api::UpdateWeightsFromDiskResponse>, Status> {
+        Err(Status::unimplemented("update_weights_from_disk"))
+    }
     async fn init_weights_update_group(
         &self,
         _: Request<api::InitWeightsUpdateGroupRequest>,
