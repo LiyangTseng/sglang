@@ -185,6 +185,9 @@ fn bad_request(message: String) -> Response {
 }
 
 #[cfg(test)]
+mod measure;
+
+#[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
     use std::convert::Infallible;
