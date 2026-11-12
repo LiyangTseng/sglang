@@ -1096,4 +1096,198 @@ mod tests {
             "{reply}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Measurement harness (not for merge): rank 0's relay against direct
+    // submission to rank 1, for one large body over loopback TCP.
+    // Run: cargo test --release -p sglang-server --lib measure_relay -- --ignored --nocapture
+    // -----------------------------------------------------------------------
+
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicI64, Ordering::Relaxed};
+    use std::time::Instant;
+
+    /// Counts the live heap of the whole test binary and its peak.
+    struct Counting;
+
+    #[global_allocator]
+    static GLOBAL: Counting = Counting;
+
+    static LIVE: AtomicI64 = AtomicI64::new(0);
+    static PEAK: AtomicI64 = AtomicI64::new(0);
+
+    fn grow(delta: i64) {
+        let live = LIVE.fetch_add(delta, Relaxed) + delta;
+        PEAK.fetch_max(live, Relaxed);
+    }
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                grow(layout.size() as i64);
+            }
+            ptr
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc_zeroed(layout) };
+            if !ptr.is_null() {
+                grow(layout.size() as i64);
+            }
+            ptr
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) };
+            grow(-(layout.size() as i64));
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let new_ptr = unsafe { System.realloc(ptr, layout, new_size) };
+            if !new_ptr.is_null() {
+                grow(new_size as i64 - layout.size() as i64);
+            }
+            new_ptr
+        }
+    }
+
+    const MIB: usize = 1 << 20;
+
+    /// When rank 1 read its first and last body byte, from the client's start.
+    #[derive(Default)]
+    struct Reads {
+        first: Option<Instant>,
+        last: Option<Instant>,
+        bytes: usize,
+    }
+
+    /// A rank 1 listener that reads and drops each chunk, so it holds about
+    /// one chunk, and records when the body arrived.
+    async fn draining_peer() -> (String, Arc<Mutex<Reads>>) {
+        let reads = Arc::new(Mutex::new(Reads::default()));
+        let recorded = reads.clone();
+        let drain = post(move |request: Request| {
+            let recorded = recorded.clone();
+            async move {
+                let mut body = request.into_body().into_data_stream();
+                while let Some(Ok(chunk)) = body.next().await {
+                    let now = Instant::now();
+                    let mut reads = recorded.lock().unwrap();
+                    reads.first.get_or_insert(now);
+                    reads.last = Some(now);
+                    reads.bytes += chunk.len();
+                }
+                (StatusCode::OK, "{}")
+            }
+        });
+        let url = serve(Router::new().route("/v1/completions", drain))
+            .await
+            .unwrap();
+        (url, reads)
+    }
+
+    /// A `/v1/completions` body of `input_ids`, about `size` bytes.
+    fn input_ids_body(size: usize) -> Bytes {
+        let mut body = String::with_capacity(size + 64);
+        body.push_str(r#"{"model":"m","max_tokens":1,"prompt":["#);
+        let mut id = 0u32;
+        while body.len() < size {
+            if id > 0 {
+                body.push(',');
+            }
+            body.push_str(&(100_000 + id % 50_000).to_string());
+            id += 1;
+        }
+        body.push_str("]}");
+        Bytes::from(body)
+    }
+
+    struct Run {
+        peak_mib: f64,
+        first_ms: f64,
+        last_ms: f64,
+        done_ms: f64,
+    }
+
+    /// Send `body` to `url` in 1 MiB slices, `pace` apart, naming rank 1 in the
+    /// header; measure the heap peak above the start and rank 1's read times.
+    async fn run(
+        client: &reqwest::Client,
+        url: &str,
+        body: &Bytes,
+        pace: Duration,
+        reads: &Mutex<Reads>,
+    ) -> Run {
+        *reads.lock().unwrap() = Reads::default();
+        let slices: Vec<Bytes> = (0..body.len())
+            .step_by(MIB)
+            .map(|start| body.slice(start..(start + MIB).min(body.len())))
+            .collect();
+        let stream = futures::stream::iter(slices).then(move |slice| async move {
+            if !pace.is_zero() {
+                tokio::time::sleep(pace).await;
+            }
+            Ok::<_, std::io::Error>(slice)
+        });
+        let base = LIVE.load(Relaxed);
+        PEAK.store(base, Relaxed);
+        let start = Instant::now();
+        let response = client
+            .post(format!("{url}/v1/completions"))
+            .header(DATA_PARALLEL_RANK_HEADER, "1")
+            .header(header::CONTENT_LENGTH, body.len())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response.bytes().await.unwrap();
+        let done = start.elapsed();
+        let peak = PEAK.load(Relaxed) - base;
+        let reads = reads.lock().unwrap();
+        assert_eq!(reads.bytes, body.len());
+        let ms = |at: Option<Instant>| (at.unwrap() - start).as_secs_f64() * 1e3;
+        Run {
+            peak_mib: peak as f64 / MIB as f64,
+            first_ms: ms(reads.first),
+            last_ms: ms(reads.last),
+            done_ms: done.as_secs_f64() * 1e3,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "measurement, not a test"]
+    async fn measure_relay() {
+        let size: usize = std::env::var("MEASURE_MIB")
+            .ok()
+            .and_then(|mib| mib.parse().ok())
+            .unwrap_or(32)
+            * MIB;
+        let runs: usize = std::env::var("MEASURE_RUNS")
+            .ok()
+            .and_then(|runs| runs.parse().ok())
+            .unwrap_or(3);
+        let body = input_ids_body(size);
+        let (peer_url, reads) = draining_peer().await;
+        let relay_url = serve(listener(&peer_url, false, core())).await.unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        println!(
+            "body {:.2} MiB, 1 MiB slices; peak = heap above the start, whole process",
+            body.len() as f64 / MIB as f64
+        );
+        println!("arm     pace_ms  peak_MiB  first_byte_ms  last_byte_ms  done_ms");
+        for pace_ms in [0u64, 5] {
+            let pace = Duration::from_millis(pace_ms);
+            for (arm, url) in [("direct", &peer_url), ("relay", &relay_url)] {
+                // Warm the connection pools and allocator once per arm.
+                run(&client, url, &body, Duration::ZERO, &reads).await;
+                for _ in 0..runs {
+                    let r = run(&client, url, &body, pace, &reads).await;
+                    println!(
+                        "{arm:<7} {pace_ms:>7}  {:>8.1}  {:>13.1}  {:>12.1}  {:>7.1}",
+                        r.peak_mib, r.first_ms, r.last_ms, r.done_ms
+                    );
+                }
+            }
+        }
+    }
 }
